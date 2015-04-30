@@ -7757,6 +7757,11 @@ ZEND_VM_HANDLER(182, ZEND_BIND_LEXICAL, TMP, CV, REF)
 		} else {
 			ZVAL_MAKE_REF_EX(var, 2);
 		}
+	} else if (opline->extended_value & ZEND_BIND_IMPLICIT) {
+		/* short closure implicit binding */
+		var = EX_VAR(opline->op2.var);
+		ZVAL_DEREF(var);
+		Z_TRY_ADDREF_P(var);
 	} else {
 		var = GET_OP2_ZVAL_PTR_UNDEF(BP_VAR_R);
 		if (UNEXPECTED(Z_ISUNDEF_P(var))) {
@@ -7770,7 +7775,7 @@ ZEND_VM_HANDLER(182, ZEND_BIND_LEXICAL, TMP, CV, REF)
 		Z_TRY_ADDREF_P(var);
 	}
 
-	zend_closure_bind_var_ex(closure, (opline->extended_value & ~ZEND_BIND_REF), var);
+	zend_closure_bind_var_ex(closure, (opline->extended_value & ~(ZEND_BIND_REF | ZEND_BIND_IMPLICIT)), var);
 	ZEND_VM_NEXT_OPCODE();
 }
 
