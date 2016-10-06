@@ -2367,18 +2367,6 @@ static void cleanup_unfinished_calls(zend_execute_data *execute_data, uint32_t o
 		zend_op *opline = EX(func)->op_array.opcodes + op_num;
 		int level;
 		int do_exit;
-		
-		if (UNEXPECTED(opline->opcode == ZEND_INIT_FCALL ||
-			opline->opcode == ZEND_INIT_FCALL_BY_NAME ||
-			opline->opcode == ZEND_INIT_NS_FCALL_BY_NAME ||
-			opline->opcode == ZEND_INIT_DYNAMIC_CALL ||
-			opline->opcode == ZEND_INIT_USER_CALL ||
-			opline->opcode == ZEND_INIT_METHOD_CALL ||
-			opline->opcode == ZEND_INIT_STATIC_METHOD_CALL ||
-			opline->opcode == ZEND_NEW)) {
-			ZEND_ASSERT(op_num);
-			opline--;
-		}
 
 		do {
 			/* If the exception was thrown during a function call there might be

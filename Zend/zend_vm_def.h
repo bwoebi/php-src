@@ -3154,6 +3154,7 @@ ZEND_VM_HANDLER(112, ZEND_INIT_METHOD_CALL, CONST|TMPVAR|UNUSED|THIS|CV, CONST|T
 			zend_throw_error(NULL, "Method name must be a string");
 			FREE_OP2();
 			FREE_UNFETCHED_OP1();
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		} while (0);
 	}
@@ -3163,6 +3164,7 @@ ZEND_VM_HANDLER(112, ZEND_INIT_METHOD_CALL, CONST|TMPVAR|UNUSED|THIS|CV, CONST|T
 	if (OP1_TYPE == IS_UNUSED && UNEXPECTED(Z_TYPE_P(object) == IS_UNDEF)) {
 		zend_throw_error(NULL, "Using $this when not in object context");
 		FREE_OP2();
+		ZEND_INSERT_DUMMY_STACK_FRAME();
 		HANDLE_EXCEPTION();
 	}
 
@@ -3179,12 +3181,14 @@ ZEND_VM_HANDLER(112, ZEND_INIT_METHOD_CALL, CONST|TMPVAR|UNUSED|THIS|CV, CONST|T
 					object = GET_OP1_UNDEF_CV(object, BP_VAR_R);
 					if (UNEXPECTED(EG(exception) != NULL)) {
 						FREE_OP2();
+						ZEND_INSERT_DUMMY_STACK_FRAME();
 						HANDLE_EXCEPTION();
 					}
 				}
 				zend_throw_error(NULL, "Call to a member function %s() on %s", Z_STRVAL_P(function_name), zend_get_type_by_const(Z_TYPE_P(object)));
 				FREE_OP2();
 				FREE_OP1();
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 		} while (0);
@@ -3201,6 +3205,7 @@ ZEND_VM_HANDLER(112, ZEND_INIT_METHOD_CALL, CONST|TMPVAR|UNUSED|THIS|CV, CONST|T
 			zend_throw_error(NULL, "Object does not support method calls");
 			FREE_OP2();
 			FREE_OP1();
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 
@@ -3212,6 +3217,7 @@ ZEND_VM_HANDLER(112, ZEND_INIT_METHOD_CALL, CONST|TMPVAR|UNUSED|THIS|CV, CONST|T
 			}
 			FREE_OP2();
 			FREE_OP1();
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if (OP2_TYPE == IS_CONST &&
@@ -3263,6 +3269,7 @@ ZEND_VM_HANDLER(113, ZEND_INIT_STATIC_METHOD_CALL, UNUSED|CLASS_FETCH|CONST|VAR,
 			ce = zend_fetch_class_by_name(Z_STR_P(EX_CONSTANT(opline->op1)), EX_CONSTANT(opline->op1) + 1, ZEND_FETCH_CLASS_DEFAULT |  ZEND_FETCH_CLASS_EXCEPTION);
 			if (UNEXPECTED(ce == NULL)) {
 				ZEND_ASSERT(EG(exception));
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 			CACHE_PTR(Z_CACHE_SLOT_P(EX_CONSTANT(opline->op1)), ce);
@@ -3272,6 +3279,7 @@ ZEND_VM_HANDLER(113, ZEND_INIT_STATIC_METHOD_CALL, UNUSED|CLASS_FETCH|CONST|VAR,
 		if (UNEXPECTED(ce == NULL)) {
 			ZEND_ASSERT(EG(exception));
 			FREE_UNFETCHED_OP2();
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 	} else {
@@ -3306,6 +3314,7 @@ ZEND_VM_HANDLER(113, ZEND_INIT_STATIC_METHOD_CALL, UNUSED|CLASS_FETCH|CONST|VAR,
 					}
 					zend_throw_error(NULL, "Function name must be a string");
 					FREE_OP2();
+					ZEND_INSERT_DUMMY_STACK_FRAME();
 					HANDLE_EXCEPTION();
 				} while (0);
  			}
@@ -3321,6 +3330,7 @@ ZEND_VM_HANDLER(113, ZEND_INIT_STATIC_METHOD_CALL, UNUSED|CLASS_FETCH|CONST|VAR,
 				zend_throw_error(NULL, "Call to undefined method %s::%s()", ZSTR_VAL(ce->name), Z_STRVAL_P(function_name));
 			}
 			FREE_OP2();
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if (OP2_TYPE == IS_CONST &&
@@ -3341,10 +3351,12 @@ ZEND_VM_HANDLER(113, ZEND_INIT_STATIC_METHOD_CALL, UNUSED|CLASS_FETCH|CONST|VAR,
 	} else {
 		if (UNEXPECTED(ce->constructor == NULL)) {
 			zend_throw_error(NULL, "Cannot call constructor");
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if (Z_TYPE(EX(This)) == IS_OBJECT && Z_OBJ(EX(This))->ce != ce->constructor->common.scope && (ce->constructor->common.fn_flags & ZEND_ACC_PRIVATE)) {
 			zend_throw_error(NULL, "Cannot call private %s::__construct()", ZSTR_VAL(ce->name));
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		fbc = ce->constructor;
@@ -3367,6 +3379,7 @@ ZEND_VM_HANDLER(113, ZEND_INIT_STATIC_METHOD_CALL, UNUSED|CLASS_FETCH|CONST|VAR,
 					ZSTR_VAL(fbc->common.scope->name), ZSTR_VAL(fbc->common.function_name));
 				if (UNEXPECTED(EG(exception) != NULL)) {
 					HANDLE_EXCEPTION();
+					ZEND_INSERT_DUMMY_STACK_FRAME();
 				}
 			} else {
 				/* An internal function assumes $this is present and won't check that.
@@ -3375,6 +3388,7 @@ ZEND_VM_HANDLER(113, ZEND_INIT_STATIC_METHOD_CALL, UNUSED|CLASS_FETCH|CONST|VAR,
 					zend_ce_error,
 					"Non-static method %s::%s() cannot be called statically",
 					ZSTR_VAL(fbc->common.scope->name), ZSTR_VAL(fbc->common.function_name));
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 		}
@@ -3414,6 +3428,7 @@ ZEND_VM_HANDLER(59, ZEND_INIT_FCALL_BY_NAME, ANY, CONST, NUM)
 		if (UNEXPECTED(func == NULL)) {
 			SAVE_OPLINE();
 			zend_throw_error(NULL, "Call to undefined function %s()", Z_STRVAL_P(function_name));
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		fbc = Z_FUNC_P(func);
@@ -3464,6 +3479,7 @@ ZEND_VM_C_LABEL(try_function_name):
 	FREE_OP2();
 
 	if (UNEXPECTED(!call)) {
+		ZEND_INSERT_DUMMY_STACK_FRAME();
 		HANDLE_EXCEPTION();
 	}
 
@@ -3510,7 +3526,8 @@ ZEND_VM_HANDLER(118, ZEND_INIT_USER_CALL, CONST, CONST|TMPVAR|CV, NUM)
 			zend_error(E_DEPRECATED,
 				"Non-static method %s::%s() should not be called statically",
 				ZSTR_VAL(func->common.scope->name), ZSTR_VAL(func->common.function_name));
-			if (UNEXPECTED(EG(exception) != NULL)) {
+			if (EG(exception)) {
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 		}
@@ -3520,7 +3537,7 @@ ZEND_VM_HANDLER(118, ZEND_INIT_USER_CALL, CONST, CONST|TMPVAR|CV, NUM)
 	} else {
 		zend_internal_type_error(EX_USES_STRICT_TYPES(), "%s() expects parameter 1 to be a valid callback, %s", Z_STRVAL_P(EX_CONSTANT(opline->op1)), error);
 		efree(error);
-		func = (zend_function*)&zend_pass_function;
+		func = (zend_function *) &zend_pass_function;
 		called_scope = NULL;
 		object = NULL;
 	}
@@ -3552,6 +3569,7 @@ ZEND_VM_HANDLER(69, ZEND_INIT_NS_FCALL_BY_NAME, ANY, CONST, NUM)
 			if (UNEXPECTED(func == NULL)) {
 				SAVE_OPLINE();
 				zend_throw_error(NULL, "Call to undefined function %s()", Z_STRVAL_P(EX_CONSTANT(opline->op2)));
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 		}
@@ -3585,6 +3603,7 @@ ZEND_VM_HANDLER(61, ZEND_INIT_FCALL, NUM, CONST, NUM)
 		if (UNEXPECTED(func == NULL)) {
 		    SAVE_OPLINE();
 			zend_throw_error(NULL, "Call to undefined function %s()", Z_STRVAL_P(fname));
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		fbc = Z_FUNC_P(func);

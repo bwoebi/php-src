@@ -2128,6 +2128,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_FCALL_BY_NAME_SPEC_CONST_
 		if (UNEXPECTED(func == NULL)) {
 			SAVE_OPLINE();
 			zend_throw_error(NULL, "Call to undefined function %s()", Z_STRVAL_P(function_name));
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		fbc = Z_FUNC_P(func);
@@ -2176,6 +2177,7 @@ try_function_name:
 	}
 
 	if (UNEXPECTED(!call)) {
+		ZEND_INSERT_DUMMY_STACK_FRAME();
 		HANDLE_EXCEPTION();
 	}
 
@@ -2203,6 +2205,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_NS_FCALL_BY_NAME_SPEC_CON
 			if (UNEXPECTED(func == NULL)) {
 				SAVE_OPLINE();
 				zend_throw_error(NULL, "Call to undefined function %s()", Z_STRVAL_P(EX_CONSTANT(opline->op2)));
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 		}
@@ -2236,6 +2239,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_FCALL_SPEC_CONST_HANDLER(
 		if (UNEXPECTED(func == NULL)) {
 		    SAVE_OPLINE();
 			zend_throw_error(NULL, "Call to undefined function %s()", Z_STRVAL_P(fname));
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		fbc = Z_FUNC_P(func);
@@ -2472,6 +2476,7 @@ try_function_name:
 	}
 
 	if (UNEXPECTED(!call)) {
+		ZEND_INSERT_DUMMY_STACK_FRAME();
 		HANDLE_EXCEPTION();
 	}
 
@@ -2558,6 +2563,7 @@ try_function_name:
 	zval_ptr_dtor_nogc(free_op2);
 
 	if (UNEXPECTED(!call)) {
+		ZEND_INSERT_DUMMY_STACK_FRAME();
 		HANDLE_EXCEPTION();
 	}
 
@@ -5329,6 +5335,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_CONST_CO
 			zend_throw_error(NULL, "Method name must be a string");
 
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		} while (0);
 	}
@@ -5338,6 +5345,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_CONST_CO
 	if (IS_CONST == IS_UNUSED && UNEXPECTED(Z_TYPE_P(object) == IS_UNDEF)) {
 		zend_throw_error(NULL, "Using $this when not in object context");
 
+		ZEND_INSERT_DUMMY_STACK_FRAME();
 		HANDLE_EXCEPTION();
 	}
 
@@ -5354,12 +5362,14 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_CONST_CO
 					object = GET_OP1_UNDEF_CV(object, BP_VAR_R);
 					if (UNEXPECTED(EG(exception) != NULL)) {
 
+						ZEND_INSERT_DUMMY_STACK_FRAME();
 						HANDLE_EXCEPTION();
 					}
 				}
 				zend_throw_error(NULL, "Call to a member function %s() on %s", Z_STRVAL_P(function_name), zend_get_type_by_const(Z_TYPE_P(object)));
 
 
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 		} while (0);
@@ -5376,6 +5386,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_CONST_CO
 			zend_throw_error(NULL, "Object does not support method calls");
 
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 
@@ -5387,6 +5398,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_CONST_CO
 			}
 
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if (IS_CONST == IS_CONST &&
@@ -5436,6 +5448,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_C
 			ce = zend_fetch_class_by_name(Z_STR_P(EX_CONSTANT(opline->op1)), EX_CONSTANT(opline->op1) + 1, ZEND_FETCH_CLASS_DEFAULT |  ZEND_FETCH_CLASS_EXCEPTION);
 			if (UNEXPECTED(ce == NULL)) {
 				ZEND_ASSERT(EG(exception));
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 			CACHE_PTR(Z_CACHE_SLOT_P(EX_CONSTANT(opline->op1)), ce);
@@ -5445,6 +5458,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_C
 		if (UNEXPECTED(ce == NULL)) {
 			ZEND_ASSERT(EG(exception));
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 	} else {
@@ -5479,6 +5493,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_C
 					}
 					zend_throw_error(NULL, "Function name must be a string");
 
+					ZEND_INSERT_DUMMY_STACK_FRAME();
 					HANDLE_EXCEPTION();
 				} while (0);
  			}
@@ -5494,6 +5509,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_C
 				zend_throw_error(NULL, "Call to undefined method %s::%s()", ZSTR_VAL(ce->name), Z_STRVAL_P(function_name));
 			}
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if (IS_CONST == IS_CONST &&
@@ -5514,10 +5530,12 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_C
 	} else {
 		if (UNEXPECTED(ce->constructor == NULL)) {
 			zend_throw_error(NULL, "Cannot call constructor");
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if (Z_TYPE(EX(This)) == IS_OBJECT && Z_OBJ(EX(This))->ce != ce->constructor->common.scope && (ce->constructor->common.fn_flags & ZEND_ACC_PRIVATE)) {
 			zend_throw_error(NULL, "Cannot call private %s::__construct()", ZSTR_VAL(ce->name));
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		fbc = ce->constructor;
@@ -5540,6 +5558,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_C
 					ZSTR_VAL(fbc->common.scope->name), ZSTR_VAL(fbc->common.function_name));
 				if (UNEXPECTED(EG(exception) != NULL)) {
 					HANDLE_EXCEPTION();
+					ZEND_INSERT_DUMMY_STACK_FRAME();
 				}
 			} else {
 				/* An internal function assumes $this is present and won't check that.
@@ -5548,6 +5567,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_C
 					zend_ce_error,
 					"Non-static method %s::%s() cannot be called statically",
 					ZSTR_VAL(fbc->common.scope->name), ZSTR_VAL(fbc->common.function_name));
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 		}
@@ -5610,7 +5630,8 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_USER_CALL_SPEC_CONST_CONS
 			zend_error(E_DEPRECATED,
 				"Non-static method %s::%s() should not be called statically",
 				ZSTR_VAL(func->common.scope->name), ZSTR_VAL(func->common.function_name));
-			if (UNEXPECTED(EG(exception) != NULL)) {
+			if (EG(exception)) {
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 		}
@@ -5620,7 +5641,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_USER_CALL_SPEC_CONST_CONS
 	} else {
 		zend_internal_type_error(EX_USES_STRICT_TYPES(), "%s() expects parameter 1 to be a valid callback, %s", Z_STRVAL_P(EX_CONSTANT(opline->op1)), error);
 		efree(error);
-		func = (zend_function*)&zend_pass_function;
+		func = (zend_function *) &zend_pass_function;
 		called_scope = NULL;
 		object = NULL;
 	}
@@ -7408,6 +7429,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_C
 			ce = zend_fetch_class_by_name(Z_STR_P(EX_CONSTANT(opline->op1)), EX_CONSTANT(opline->op1) + 1, ZEND_FETCH_CLASS_DEFAULT |  ZEND_FETCH_CLASS_EXCEPTION);
 			if (UNEXPECTED(ce == NULL)) {
 				ZEND_ASSERT(EG(exception));
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 			CACHE_PTR(Z_CACHE_SLOT_P(EX_CONSTANT(opline->op1)), ce);
@@ -7417,6 +7439,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_C
 		if (UNEXPECTED(ce == NULL)) {
 			ZEND_ASSERT(EG(exception));
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 	} else {
@@ -7451,6 +7474,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_C
 					}
 					zend_throw_error(NULL, "Function name must be a string");
 
+					ZEND_INSERT_DUMMY_STACK_FRAME();
 					HANDLE_EXCEPTION();
 				} while (0);
  			}
@@ -7466,6 +7490,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_C
 				zend_throw_error(NULL, "Call to undefined method %s::%s()", ZSTR_VAL(ce->name), Z_STRVAL_P(function_name));
 			}
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if (IS_UNUSED == IS_CONST &&
@@ -7486,10 +7511,12 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_C
 	} else {
 		if (UNEXPECTED(ce->constructor == NULL)) {
 			zend_throw_error(NULL, "Cannot call constructor");
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if (Z_TYPE(EX(This)) == IS_OBJECT && Z_OBJ(EX(This))->ce != ce->constructor->common.scope && (ce->constructor->common.fn_flags & ZEND_ACC_PRIVATE)) {
 			zend_throw_error(NULL, "Cannot call private %s::__construct()", ZSTR_VAL(ce->name));
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		fbc = ce->constructor;
@@ -7512,6 +7539,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_C
 					ZSTR_VAL(fbc->common.scope->name), ZSTR_VAL(fbc->common.function_name));
 				if (UNEXPECTED(EG(exception) != NULL)) {
 					HANDLE_EXCEPTION();
+					ZEND_INSERT_DUMMY_STACK_FRAME();
 				}
 			} else {
 				/* An internal function assumes $this is present and won't check that.
@@ -7520,6 +7548,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_C
 					zend_ce_error,
 					"Non-static method %s::%s() cannot be called statically",
 					ZSTR_VAL(fbc->common.scope->name), ZSTR_VAL(fbc->common.function_name));
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 		}
@@ -9224,6 +9253,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_CONST_CV
 			zend_throw_error(NULL, "Method name must be a string");
 
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		} while (0);
 	}
@@ -9233,6 +9263,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_CONST_CV
 	if (IS_CONST == IS_UNUSED && UNEXPECTED(Z_TYPE_P(object) == IS_UNDEF)) {
 		zend_throw_error(NULL, "Using $this when not in object context");
 
+		ZEND_INSERT_DUMMY_STACK_FRAME();
 		HANDLE_EXCEPTION();
 	}
 
@@ -9249,12 +9280,14 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_CONST_CV
 					object = GET_OP1_UNDEF_CV(object, BP_VAR_R);
 					if (UNEXPECTED(EG(exception) != NULL)) {
 
+						ZEND_INSERT_DUMMY_STACK_FRAME();
 						HANDLE_EXCEPTION();
 					}
 				}
 				zend_throw_error(NULL, "Call to a member function %s() on %s", Z_STRVAL_P(function_name), zend_get_type_by_const(Z_TYPE_P(object)));
 
 
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 		} while (0);
@@ -9271,6 +9304,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_CONST_CV
 			zend_throw_error(NULL, "Object does not support method calls");
 
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 
@@ -9282,6 +9316,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_CONST_CV
 			}
 
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if (IS_CV == IS_CONST &&
@@ -9331,6 +9366,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_C
 			ce = zend_fetch_class_by_name(Z_STR_P(EX_CONSTANT(opline->op1)), EX_CONSTANT(opline->op1) + 1, ZEND_FETCH_CLASS_DEFAULT |  ZEND_FETCH_CLASS_EXCEPTION);
 			if (UNEXPECTED(ce == NULL)) {
 				ZEND_ASSERT(EG(exception));
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 			CACHE_PTR(Z_CACHE_SLOT_P(EX_CONSTANT(opline->op1)), ce);
@@ -9340,6 +9376,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_C
 		if (UNEXPECTED(ce == NULL)) {
 			ZEND_ASSERT(EG(exception));
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 	} else {
@@ -9374,6 +9411,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_C
 					}
 					zend_throw_error(NULL, "Function name must be a string");
 
+					ZEND_INSERT_DUMMY_STACK_FRAME();
 					HANDLE_EXCEPTION();
 				} while (0);
  			}
@@ -9389,6 +9427,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_C
 				zend_throw_error(NULL, "Call to undefined method %s::%s()", ZSTR_VAL(ce->name), Z_STRVAL_P(function_name));
 			}
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if (IS_CV == IS_CONST &&
@@ -9409,10 +9448,12 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_C
 	} else {
 		if (UNEXPECTED(ce->constructor == NULL)) {
 			zend_throw_error(NULL, "Cannot call constructor");
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if (Z_TYPE(EX(This)) == IS_OBJECT && Z_OBJ(EX(This))->ce != ce->constructor->common.scope && (ce->constructor->common.fn_flags & ZEND_ACC_PRIVATE)) {
 			zend_throw_error(NULL, "Cannot call private %s::__construct()", ZSTR_VAL(ce->name));
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		fbc = ce->constructor;
@@ -9435,6 +9476,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_C
 					ZSTR_VAL(fbc->common.scope->name), ZSTR_VAL(fbc->common.function_name));
 				if (UNEXPECTED(EG(exception) != NULL)) {
 					HANDLE_EXCEPTION();
+					ZEND_INSERT_DUMMY_STACK_FRAME();
 				}
 			} else {
 				/* An internal function assumes $this is present and won't check that.
@@ -9443,6 +9485,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_C
 					zend_ce_error,
 					"Non-static method %s::%s() cannot be called statically",
 					ZSTR_VAL(fbc->common.scope->name), ZSTR_VAL(fbc->common.function_name));
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 		}
@@ -9505,7 +9548,8 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_USER_CALL_SPEC_CONST_CV_H
 			zend_error(E_DEPRECATED,
 				"Non-static method %s::%s() should not be called statically",
 				ZSTR_VAL(func->common.scope->name), ZSTR_VAL(func->common.function_name));
-			if (UNEXPECTED(EG(exception) != NULL)) {
+			if (EG(exception)) {
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 		}
@@ -9515,7 +9559,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_USER_CALL_SPEC_CONST_CV_H
 	} else {
 		zend_internal_type_error(EX_USES_STRICT_TYPES(), "%s() expects parameter 1 to be a valid callback, %s", Z_STRVAL_P(EX_CONSTANT(opline->op1)), error);
 		efree(error);
-		func = (zend_function*)&zend_pass_function;
+		func = (zend_function *) &zend_pass_function;
 		called_scope = NULL;
 		object = NULL;
 	}
@@ -11182,6 +11226,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_CONST_TM
 			zend_throw_error(NULL, "Method name must be a string");
 			zval_ptr_dtor_nogc(free_op2);
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		} while (0);
 	}
@@ -11191,6 +11236,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_CONST_TM
 	if (IS_CONST == IS_UNUSED && UNEXPECTED(Z_TYPE_P(object) == IS_UNDEF)) {
 		zend_throw_error(NULL, "Using $this when not in object context");
 		zval_ptr_dtor_nogc(free_op2);
+		ZEND_INSERT_DUMMY_STACK_FRAME();
 		HANDLE_EXCEPTION();
 	}
 
@@ -11207,12 +11253,14 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_CONST_TM
 					object = GET_OP1_UNDEF_CV(object, BP_VAR_R);
 					if (UNEXPECTED(EG(exception) != NULL)) {
 						zval_ptr_dtor_nogc(free_op2);
+						ZEND_INSERT_DUMMY_STACK_FRAME();
 						HANDLE_EXCEPTION();
 					}
 				}
 				zend_throw_error(NULL, "Call to a member function %s() on %s", Z_STRVAL_P(function_name), zend_get_type_by_const(Z_TYPE_P(object)));
 				zval_ptr_dtor_nogc(free_op2);
 
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 		} while (0);
@@ -11229,6 +11277,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_CONST_TM
 			zend_throw_error(NULL, "Object does not support method calls");
 			zval_ptr_dtor_nogc(free_op2);
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 
@@ -11240,6 +11289,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_CONST_TM
 			}
 			zval_ptr_dtor_nogc(free_op2);
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if ((IS_TMP_VAR|IS_VAR) == IS_CONST &&
@@ -11290,6 +11340,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_C
 			ce = zend_fetch_class_by_name(Z_STR_P(EX_CONSTANT(opline->op1)), EX_CONSTANT(opline->op1) + 1, ZEND_FETCH_CLASS_DEFAULT |  ZEND_FETCH_CLASS_EXCEPTION);
 			if (UNEXPECTED(ce == NULL)) {
 				ZEND_ASSERT(EG(exception));
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 			CACHE_PTR(Z_CACHE_SLOT_P(EX_CONSTANT(opline->op1)), ce);
@@ -11299,6 +11350,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_C
 		if (UNEXPECTED(ce == NULL)) {
 			ZEND_ASSERT(EG(exception));
 			zval_ptr_dtor_nogc(EX_VAR(opline->op2.var));
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 	} else {
@@ -11333,6 +11385,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_C
 					}
 					zend_throw_error(NULL, "Function name must be a string");
 					zval_ptr_dtor_nogc(free_op2);
+					ZEND_INSERT_DUMMY_STACK_FRAME();
 					HANDLE_EXCEPTION();
 				} while (0);
  			}
@@ -11348,6 +11401,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_C
 				zend_throw_error(NULL, "Call to undefined method %s::%s()", ZSTR_VAL(ce->name), Z_STRVAL_P(function_name));
 			}
 			zval_ptr_dtor_nogc(free_op2);
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if ((IS_TMP_VAR|IS_VAR) == IS_CONST &&
@@ -11368,10 +11422,12 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_C
 	} else {
 		if (UNEXPECTED(ce->constructor == NULL)) {
 			zend_throw_error(NULL, "Cannot call constructor");
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if (Z_TYPE(EX(This)) == IS_OBJECT && Z_OBJ(EX(This))->ce != ce->constructor->common.scope && (ce->constructor->common.fn_flags & ZEND_ACC_PRIVATE)) {
 			zend_throw_error(NULL, "Cannot call private %s::__construct()", ZSTR_VAL(ce->name));
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		fbc = ce->constructor;
@@ -11394,6 +11450,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_C
 					ZSTR_VAL(fbc->common.scope->name), ZSTR_VAL(fbc->common.function_name));
 				if (UNEXPECTED(EG(exception) != NULL)) {
 					HANDLE_EXCEPTION();
+					ZEND_INSERT_DUMMY_STACK_FRAME();
 				}
 			} else {
 				/* An internal function assumes $this is present and won't check that.
@@ -11402,6 +11459,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_C
 					zend_ce_error,
 					"Non-static method %s::%s() cannot be called statically",
 					ZSTR_VAL(fbc->common.scope->name), ZSTR_VAL(fbc->common.function_name));
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 		}
@@ -11464,7 +11522,8 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_USER_CALL_SPEC_CONST_TMPV
 			zend_error(E_DEPRECATED,
 				"Non-static method %s::%s() should not be called statically",
 				ZSTR_VAL(func->common.scope->name), ZSTR_VAL(func->common.function_name));
-			if (UNEXPECTED(EG(exception) != NULL)) {
+			if (EG(exception)) {
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 		}
@@ -11474,7 +11533,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_USER_CALL_SPEC_CONST_TMPV
 	} else {
 		zend_internal_type_error(EX_USES_STRICT_TYPES(), "%s() expects parameter 1 to be a valid callback, %s", Z_STRVAL_P(EX_CONSTANT(opline->op1)), error);
 		efree(error);
-		func = (zend_function*)&zend_pass_function;
+		func = (zend_function *) &zend_pass_function;
 		called_scope = NULL;
 		object = NULL;
 	}
@@ -19706,6 +19765,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_V
 			ce = zend_fetch_class_by_name(Z_STR_P(EX_CONSTANT(opline->op1)), EX_CONSTANT(opline->op1) + 1, ZEND_FETCH_CLASS_DEFAULT |  ZEND_FETCH_CLASS_EXCEPTION);
 			if (UNEXPECTED(ce == NULL)) {
 				ZEND_ASSERT(EG(exception));
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 			CACHE_PTR(Z_CACHE_SLOT_P(EX_CONSTANT(opline->op1)), ce);
@@ -19715,6 +19775,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_V
 		if (UNEXPECTED(ce == NULL)) {
 			ZEND_ASSERT(EG(exception));
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 	} else {
@@ -19749,6 +19810,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_V
 					}
 					zend_throw_error(NULL, "Function name must be a string");
 
+					ZEND_INSERT_DUMMY_STACK_FRAME();
 					HANDLE_EXCEPTION();
 				} while (0);
  			}
@@ -19764,6 +19826,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_V
 				zend_throw_error(NULL, "Call to undefined method %s::%s()", ZSTR_VAL(ce->name), Z_STRVAL_P(function_name));
 			}
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if (IS_CONST == IS_CONST &&
@@ -19784,10 +19847,12 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_V
 	} else {
 		if (UNEXPECTED(ce->constructor == NULL)) {
 			zend_throw_error(NULL, "Cannot call constructor");
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if (Z_TYPE(EX(This)) == IS_OBJECT && Z_OBJ(EX(This))->ce != ce->constructor->common.scope && (ce->constructor->common.fn_flags & ZEND_ACC_PRIVATE)) {
 			zend_throw_error(NULL, "Cannot call private %s::__construct()", ZSTR_VAL(ce->name));
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		fbc = ce->constructor;
@@ -19810,6 +19875,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_V
 					ZSTR_VAL(fbc->common.scope->name), ZSTR_VAL(fbc->common.function_name));
 				if (UNEXPECTED(EG(exception) != NULL)) {
 					HANDLE_EXCEPTION();
+					ZEND_INSERT_DUMMY_STACK_FRAME();
 				}
 			} else {
 				/* An internal function assumes $this is present and won't check that.
@@ -19818,6 +19884,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_V
 					zend_ce_error,
 					"Non-static method %s::%s() cannot be called statically",
 					ZSTR_VAL(fbc->common.scope->name), ZSTR_VAL(fbc->common.function_name));
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 		}
@@ -21599,6 +21666,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_V
 			ce = zend_fetch_class_by_name(Z_STR_P(EX_CONSTANT(opline->op1)), EX_CONSTANT(opline->op1) + 1, ZEND_FETCH_CLASS_DEFAULT |  ZEND_FETCH_CLASS_EXCEPTION);
 			if (UNEXPECTED(ce == NULL)) {
 				ZEND_ASSERT(EG(exception));
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 			CACHE_PTR(Z_CACHE_SLOT_P(EX_CONSTANT(opline->op1)), ce);
@@ -21608,6 +21676,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_V
 		if (UNEXPECTED(ce == NULL)) {
 			ZEND_ASSERT(EG(exception));
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 	} else {
@@ -21642,6 +21711,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_V
 					}
 					zend_throw_error(NULL, "Function name must be a string");
 
+					ZEND_INSERT_DUMMY_STACK_FRAME();
 					HANDLE_EXCEPTION();
 				} while (0);
  			}
@@ -21657,6 +21727,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_V
 				zend_throw_error(NULL, "Call to undefined method %s::%s()", ZSTR_VAL(ce->name), Z_STRVAL_P(function_name));
 			}
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if (IS_UNUSED == IS_CONST &&
@@ -21677,10 +21748,12 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_V
 	} else {
 		if (UNEXPECTED(ce->constructor == NULL)) {
 			zend_throw_error(NULL, "Cannot call constructor");
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if (Z_TYPE(EX(This)) == IS_OBJECT && Z_OBJ(EX(This))->ce != ce->constructor->common.scope && (ce->constructor->common.fn_flags & ZEND_ACC_PRIVATE)) {
 			zend_throw_error(NULL, "Cannot call private %s::__construct()", ZSTR_VAL(ce->name));
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		fbc = ce->constructor;
@@ -21703,6 +21776,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_V
 					ZSTR_VAL(fbc->common.scope->name), ZSTR_VAL(fbc->common.function_name));
 				if (UNEXPECTED(EG(exception) != NULL)) {
 					HANDLE_EXCEPTION();
+					ZEND_INSERT_DUMMY_STACK_FRAME();
 				}
 			} else {
 				/* An internal function assumes $this is present and won't check that.
@@ -21711,6 +21785,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_V
 					zend_ce_error,
 					"Non-static method %s::%s() cannot be called statically",
 					ZSTR_VAL(fbc->common.scope->name), ZSTR_VAL(fbc->common.function_name));
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 		}
@@ -24546,6 +24621,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_V
 			ce = zend_fetch_class_by_name(Z_STR_P(EX_CONSTANT(opline->op1)), EX_CONSTANT(opline->op1) + 1, ZEND_FETCH_CLASS_DEFAULT |  ZEND_FETCH_CLASS_EXCEPTION);
 			if (UNEXPECTED(ce == NULL)) {
 				ZEND_ASSERT(EG(exception));
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 			CACHE_PTR(Z_CACHE_SLOT_P(EX_CONSTANT(opline->op1)), ce);
@@ -24555,6 +24631,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_V
 		if (UNEXPECTED(ce == NULL)) {
 			ZEND_ASSERT(EG(exception));
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 	} else {
@@ -24589,6 +24666,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_V
 					}
 					zend_throw_error(NULL, "Function name must be a string");
 
+					ZEND_INSERT_DUMMY_STACK_FRAME();
 					HANDLE_EXCEPTION();
 				} while (0);
  			}
@@ -24604,6 +24682,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_V
 				zend_throw_error(NULL, "Call to undefined method %s::%s()", ZSTR_VAL(ce->name), Z_STRVAL_P(function_name));
 			}
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if (IS_CV == IS_CONST &&
@@ -24624,10 +24703,12 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_V
 	} else {
 		if (UNEXPECTED(ce->constructor == NULL)) {
 			zend_throw_error(NULL, "Cannot call constructor");
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if (Z_TYPE(EX(This)) == IS_OBJECT && Z_OBJ(EX(This))->ce != ce->constructor->common.scope && (ce->constructor->common.fn_flags & ZEND_ACC_PRIVATE)) {
 			zend_throw_error(NULL, "Cannot call private %s::__construct()", ZSTR_VAL(ce->name));
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		fbc = ce->constructor;
@@ -24650,6 +24731,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_V
 					ZSTR_VAL(fbc->common.scope->name), ZSTR_VAL(fbc->common.function_name));
 				if (UNEXPECTED(EG(exception) != NULL)) {
 					HANDLE_EXCEPTION();
+					ZEND_INSERT_DUMMY_STACK_FRAME();
 				}
 			} else {
 				/* An internal function assumes $this is present and won't check that.
@@ -24658,6 +24740,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_V
 					zend_ce_error,
 					"Non-static method %s::%s() cannot be called statically",
 					ZSTR_VAL(fbc->common.scope->name), ZSTR_VAL(fbc->common.function_name));
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 		}
@@ -27381,6 +27464,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_V
 			ce = zend_fetch_class_by_name(Z_STR_P(EX_CONSTANT(opline->op1)), EX_CONSTANT(opline->op1) + 1, ZEND_FETCH_CLASS_DEFAULT |  ZEND_FETCH_CLASS_EXCEPTION);
 			if (UNEXPECTED(ce == NULL)) {
 				ZEND_ASSERT(EG(exception));
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 			CACHE_PTR(Z_CACHE_SLOT_P(EX_CONSTANT(opline->op1)), ce);
@@ -27390,6 +27474,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_V
 		if (UNEXPECTED(ce == NULL)) {
 			ZEND_ASSERT(EG(exception));
 			zval_ptr_dtor_nogc(EX_VAR(opline->op2.var));
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 	} else {
@@ -27424,6 +27509,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_V
 					}
 					zend_throw_error(NULL, "Function name must be a string");
 					zval_ptr_dtor_nogc(free_op2);
+					ZEND_INSERT_DUMMY_STACK_FRAME();
 					HANDLE_EXCEPTION();
 				} while (0);
  			}
@@ -27439,6 +27525,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_V
 				zend_throw_error(NULL, "Call to undefined method %s::%s()", ZSTR_VAL(ce->name), Z_STRVAL_P(function_name));
 			}
 			zval_ptr_dtor_nogc(free_op2);
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if ((IS_TMP_VAR|IS_VAR) == IS_CONST &&
@@ -27459,10 +27546,12 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_V
 	} else {
 		if (UNEXPECTED(ce->constructor == NULL)) {
 			zend_throw_error(NULL, "Cannot call constructor");
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if (Z_TYPE(EX(This)) == IS_OBJECT && Z_OBJ(EX(This))->ce != ce->constructor->common.scope && (ce->constructor->common.fn_flags & ZEND_ACC_PRIVATE)) {
 			zend_throw_error(NULL, "Cannot call private %s::__construct()", ZSTR_VAL(ce->name));
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		fbc = ce->constructor;
@@ -27485,6 +27574,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_V
 					ZSTR_VAL(fbc->common.scope->name), ZSTR_VAL(fbc->common.function_name));
 				if (UNEXPECTED(EG(exception) != NULL)) {
 					HANDLE_EXCEPTION();
+					ZEND_INSERT_DUMMY_STACK_FRAME();
 				}
 			} else {
 				/* An internal function assumes $this is present and won't check that.
@@ -27493,6 +27583,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_V
 					zend_ce_error,
 					"Non-static method %s::%s() cannot be called statically",
 					ZSTR_VAL(fbc->common.scope->name), ZSTR_VAL(fbc->common.function_name));
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 		}
@@ -29344,6 +29435,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_UNUSED_C
 			zend_throw_error(NULL, "Method name must be a string");
 
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		} while (0);
 	}
@@ -29353,6 +29445,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_UNUSED_C
 	if (IS_UNUSED == IS_UNUSED && UNEXPECTED(Z_TYPE_P(object) == IS_UNDEF)) {
 		zend_throw_error(NULL, "Using $this when not in object context");
 
+		ZEND_INSERT_DUMMY_STACK_FRAME();
 		HANDLE_EXCEPTION();
 	}
 
@@ -29369,12 +29462,14 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_UNUSED_C
 					object = GET_OP1_UNDEF_CV(object, BP_VAR_R);
 					if (UNEXPECTED(EG(exception) != NULL)) {
 
+						ZEND_INSERT_DUMMY_STACK_FRAME();
 						HANDLE_EXCEPTION();
 					}
 				}
 				zend_throw_error(NULL, "Call to a member function %s() on %s", Z_STRVAL_P(function_name), zend_get_type_by_const(Z_TYPE_P(object)));
 
 
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 		} while (0);
@@ -29391,6 +29486,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_UNUSED_C
 			zend_throw_error(NULL, "Object does not support method calls");
 
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 
@@ -29402,6 +29498,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_UNUSED_C
 			}
 
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if (IS_CONST == IS_CONST &&
@@ -29451,6 +29548,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_U
 			ce = zend_fetch_class_by_name(Z_STR_P(EX_CONSTANT(opline->op1)), EX_CONSTANT(opline->op1) + 1, ZEND_FETCH_CLASS_DEFAULT |  ZEND_FETCH_CLASS_EXCEPTION);
 			if (UNEXPECTED(ce == NULL)) {
 				ZEND_ASSERT(EG(exception));
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 			CACHE_PTR(Z_CACHE_SLOT_P(EX_CONSTANT(opline->op1)), ce);
@@ -29460,6 +29558,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_U
 		if (UNEXPECTED(ce == NULL)) {
 			ZEND_ASSERT(EG(exception));
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 	} else {
@@ -29494,6 +29593,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_U
 					}
 					zend_throw_error(NULL, "Function name must be a string");
 
+					ZEND_INSERT_DUMMY_STACK_FRAME();
 					HANDLE_EXCEPTION();
 				} while (0);
  			}
@@ -29509,6 +29609,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_U
 				zend_throw_error(NULL, "Call to undefined method %s::%s()", ZSTR_VAL(ce->name), Z_STRVAL_P(function_name));
 			}
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if (IS_CONST == IS_CONST &&
@@ -29529,10 +29630,12 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_U
 	} else {
 		if (UNEXPECTED(ce->constructor == NULL)) {
 			zend_throw_error(NULL, "Cannot call constructor");
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if (Z_TYPE(EX(This)) == IS_OBJECT && Z_OBJ(EX(This))->ce != ce->constructor->common.scope && (ce->constructor->common.fn_flags & ZEND_ACC_PRIVATE)) {
 			zend_throw_error(NULL, "Cannot call private %s::__construct()", ZSTR_VAL(ce->name));
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		fbc = ce->constructor;
@@ -29555,6 +29658,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_U
 					ZSTR_VAL(fbc->common.scope->name), ZSTR_VAL(fbc->common.function_name));
 				if (UNEXPECTED(EG(exception) != NULL)) {
 					HANDLE_EXCEPTION();
+					ZEND_INSERT_DUMMY_STACK_FRAME();
 				}
 			} else {
 				/* An internal function assumes $this is present and won't check that.
@@ -29563,6 +29667,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_U
 					zend_ce_error,
 					"Non-static method %s::%s() cannot be called statically",
 					ZSTR_VAL(fbc->common.scope->name), ZSTR_VAL(fbc->common.function_name));
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 		}
@@ -30249,6 +30354,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_U
 			ce = zend_fetch_class_by_name(Z_STR_P(EX_CONSTANT(opline->op1)), EX_CONSTANT(opline->op1) + 1, ZEND_FETCH_CLASS_DEFAULT |  ZEND_FETCH_CLASS_EXCEPTION);
 			if (UNEXPECTED(ce == NULL)) {
 				ZEND_ASSERT(EG(exception));
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 			CACHE_PTR(Z_CACHE_SLOT_P(EX_CONSTANT(opline->op1)), ce);
@@ -30258,6 +30364,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_U
 		if (UNEXPECTED(ce == NULL)) {
 			ZEND_ASSERT(EG(exception));
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 	} else {
@@ -30292,6 +30399,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_U
 					}
 					zend_throw_error(NULL, "Function name must be a string");
 
+					ZEND_INSERT_DUMMY_STACK_FRAME();
 					HANDLE_EXCEPTION();
 				} while (0);
  			}
@@ -30307,6 +30415,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_U
 				zend_throw_error(NULL, "Call to undefined method %s::%s()", ZSTR_VAL(ce->name), Z_STRVAL_P(function_name));
 			}
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if (IS_UNUSED == IS_CONST &&
@@ -30327,10 +30436,12 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_U
 	} else {
 		if (UNEXPECTED(ce->constructor == NULL)) {
 			zend_throw_error(NULL, "Cannot call constructor");
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if (Z_TYPE(EX(This)) == IS_OBJECT && Z_OBJ(EX(This))->ce != ce->constructor->common.scope && (ce->constructor->common.fn_flags & ZEND_ACC_PRIVATE)) {
 			zend_throw_error(NULL, "Cannot call private %s::__construct()", ZSTR_VAL(ce->name));
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		fbc = ce->constructor;
@@ -30353,6 +30464,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_U
 					ZSTR_VAL(fbc->common.scope->name), ZSTR_VAL(fbc->common.function_name));
 				if (UNEXPECTED(EG(exception) != NULL)) {
 					HANDLE_EXCEPTION();
+					ZEND_INSERT_DUMMY_STACK_FRAME();
 				}
 			} else {
 				/* An internal function assumes $this is present and won't check that.
@@ -30361,6 +30473,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_U
 					zend_ce_error,
 					"Non-static method %s::%s() cannot be called statically",
 					ZSTR_VAL(fbc->common.scope->name), ZSTR_VAL(fbc->common.function_name));
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 		}
@@ -32026,6 +32139,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_UNUSED_C
 			zend_throw_error(NULL, "Method name must be a string");
 
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		} while (0);
 	}
@@ -32035,6 +32149,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_UNUSED_C
 	if (IS_UNUSED == IS_UNUSED && UNEXPECTED(Z_TYPE_P(object) == IS_UNDEF)) {
 		zend_throw_error(NULL, "Using $this when not in object context");
 
+		ZEND_INSERT_DUMMY_STACK_FRAME();
 		HANDLE_EXCEPTION();
 	}
 
@@ -32051,12 +32166,14 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_UNUSED_C
 					object = GET_OP1_UNDEF_CV(object, BP_VAR_R);
 					if (UNEXPECTED(EG(exception) != NULL)) {
 
+						ZEND_INSERT_DUMMY_STACK_FRAME();
 						HANDLE_EXCEPTION();
 					}
 				}
 				zend_throw_error(NULL, "Call to a member function %s() on %s", Z_STRVAL_P(function_name), zend_get_type_by_const(Z_TYPE_P(object)));
 
 
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 		} while (0);
@@ -32073,6 +32190,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_UNUSED_C
 			zend_throw_error(NULL, "Object does not support method calls");
 
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 
@@ -32084,6 +32202,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_UNUSED_C
 			}
 
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if (IS_CV == IS_CONST &&
@@ -32133,6 +32252,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_U
 			ce = zend_fetch_class_by_name(Z_STR_P(EX_CONSTANT(opline->op1)), EX_CONSTANT(opline->op1) + 1, ZEND_FETCH_CLASS_DEFAULT |  ZEND_FETCH_CLASS_EXCEPTION);
 			if (UNEXPECTED(ce == NULL)) {
 				ZEND_ASSERT(EG(exception));
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 			CACHE_PTR(Z_CACHE_SLOT_P(EX_CONSTANT(opline->op1)), ce);
@@ -32142,6 +32262,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_U
 		if (UNEXPECTED(ce == NULL)) {
 			ZEND_ASSERT(EG(exception));
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 	} else {
@@ -32176,6 +32297,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_U
 					}
 					zend_throw_error(NULL, "Function name must be a string");
 
+					ZEND_INSERT_DUMMY_STACK_FRAME();
 					HANDLE_EXCEPTION();
 				} while (0);
  			}
@@ -32191,6 +32313,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_U
 				zend_throw_error(NULL, "Call to undefined method %s::%s()", ZSTR_VAL(ce->name), Z_STRVAL_P(function_name));
 			}
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if (IS_CV == IS_CONST &&
@@ -32211,10 +32334,12 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_U
 	} else {
 		if (UNEXPECTED(ce->constructor == NULL)) {
 			zend_throw_error(NULL, "Cannot call constructor");
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if (Z_TYPE(EX(This)) == IS_OBJECT && Z_OBJ(EX(This))->ce != ce->constructor->common.scope && (ce->constructor->common.fn_flags & ZEND_ACC_PRIVATE)) {
 			zend_throw_error(NULL, "Cannot call private %s::__construct()", ZSTR_VAL(ce->name));
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		fbc = ce->constructor;
@@ -32237,6 +32362,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_U
 					ZSTR_VAL(fbc->common.scope->name), ZSTR_VAL(fbc->common.function_name));
 				if (UNEXPECTED(EG(exception) != NULL)) {
 					HANDLE_EXCEPTION();
+					ZEND_INSERT_DUMMY_STACK_FRAME();
 				}
 			} else {
 				/* An internal function assumes $this is present and won't check that.
@@ -32245,6 +32371,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_U
 					zend_ce_error,
 					"Non-static method %s::%s() cannot be called statically",
 					ZSTR_VAL(fbc->common.scope->name), ZSTR_VAL(fbc->common.function_name));
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 		}
@@ -33914,6 +34041,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_UNUSED_T
 			zend_throw_error(NULL, "Method name must be a string");
 			zval_ptr_dtor_nogc(free_op2);
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		} while (0);
 	}
@@ -33923,6 +34051,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_UNUSED_T
 	if (IS_UNUSED == IS_UNUSED && UNEXPECTED(Z_TYPE_P(object) == IS_UNDEF)) {
 		zend_throw_error(NULL, "Using $this when not in object context");
 		zval_ptr_dtor_nogc(free_op2);
+		ZEND_INSERT_DUMMY_STACK_FRAME();
 		HANDLE_EXCEPTION();
 	}
 
@@ -33939,12 +34068,14 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_UNUSED_T
 					object = GET_OP1_UNDEF_CV(object, BP_VAR_R);
 					if (UNEXPECTED(EG(exception) != NULL)) {
 						zval_ptr_dtor_nogc(free_op2);
+						ZEND_INSERT_DUMMY_STACK_FRAME();
 						HANDLE_EXCEPTION();
 					}
 				}
 				zend_throw_error(NULL, "Call to a member function %s() on %s", Z_STRVAL_P(function_name), zend_get_type_by_const(Z_TYPE_P(object)));
 				zval_ptr_dtor_nogc(free_op2);
 
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 		} while (0);
@@ -33961,6 +34092,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_UNUSED_T
 			zend_throw_error(NULL, "Object does not support method calls");
 			zval_ptr_dtor_nogc(free_op2);
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 
@@ -33972,6 +34104,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_UNUSED_T
 			}
 			zval_ptr_dtor_nogc(free_op2);
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if ((IS_TMP_VAR|IS_VAR) == IS_CONST &&
@@ -34022,6 +34155,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_U
 			ce = zend_fetch_class_by_name(Z_STR_P(EX_CONSTANT(opline->op1)), EX_CONSTANT(opline->op1) + 1, ZEND_FETCH_CLASS_DEFAULT |  ZEND_FETCH_CLASS_EXCEPTION);
 			if (UNEXPECTED(ce == NULL)) {
 				ZEND_ASSERT(EG(exception));
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 			CACHE_PTR(Z_CACHE_SLOT_P(EX_CONSTANT(opline->op1)), ce);
@@ -34031,6 +34165,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_U
 		if (UNEXPECTED(ce == NULL)) {
 			ZEND_ASSERT(EG(exception));
 			zval_ptr_dtor_nogc(EX_VAR(opline->op2.var));
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 	} else {
@@ -34065,6 +34200,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_U
 					}
 					zend_throw_error(NULL, "Function name must be a string");
 					zval_ptr_dtor_nogc(free_op2);
+					ZEND_INSERT_DUMMY_STACK_FRAME();
 					HANDLE_EXCEPTION();
 				} while (0);
  			}
@@ -34080,6 +34216,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_U
 				zend_throw_error(NULL, "Call to undefined method %s::%s()", ZSTR_VAL(ce->name), Z_STRVAL_P(function_name));
 			}
 			zval_ptr_dtor_nogc(free_op2);
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if ((IS_TMP_VAR|IS_VAR) == IS_CONST &&
@@ -34100,10 +34237,12 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_U
 	} else {
 		if (UNEXPECTED(ce->constructor == NULL)) {
 			zend_throw_error(NULL, "Cannot call constructor");
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if (Z_TYPE(EX(This)) == IS_OBJECT && Z_OBJ(EX(This))->ce != ce->constructor->common.scope && (ce->constructor->common.fn_flags & ZEND_ACC_PRIVATE)) {
 			zend_throw_error(NULL, "Cannot call private %s::__construct()", ZSTR_VAL(ce->name));
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		fbc = ce->constructor;
@@ -34126,6 +34265,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_U
 					ZSTR_VAL(fbc->common.scope->name), ZSTR_VAL(fbc->common.function_name));
 				if (UNEXPECTED(EG(exception) != NULL)) {
 					HANDLE_EXCEPTION();
+					ZEND_INSERT_DUMMY_STACK_FRAME();
 				}
 			} else {
 				/* An internal function assumes $this is present and won't check that.
@@ -34134,6 +34274,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_STATIC_METHOD_CALL_SPEC_U
 					zend_ce_error,
 					"Non-static method %s::%s() cannot be called statically",
 					ZSTR_VAL(fbc->common.scope->name), ZSTR_VAL(fbc->common.function_name));
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 		}
@@ -39503,6 +39644,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_CV_CONST
 			zend_throw_error(NULL, "Method name must be a string");
 
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		} while (0);
 	}
@@ -39512,6 +39654,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_CV_CONST
 	if (IS_CV == IS_UNUSED && UNEXPECTED(Z_TYPE_P(object) == IS_UNDEF)) {
 		zend_throw_error(NULL, "Using $this when not in object context");
 
+		ZEND_INSERT_DUMMY_STACK_FRAME();
 		HANDLE_EXCEPTION();
 	}
 
@@ -39528,12 +39671,14 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_CV_CONST
 					object = GET_OP1_UNDEF_CV(object, BP_VAR_R);
 					if (UNEXPECTED(EG(exception) != NULL)) {
 
+						ZEND_INSERT_DUMMY_STACK_FRAME();
 						HANDLE_EXCEPTION();
 					}
 				}
 				zend_throw_error(NULL, "Call to a member function %s() on %s", Z_STRVAL_P(function_name), zend_get_type_by_const(Z_TYPE_P(object)));
 
 
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 		} while (0);
@@ -39550,6 +39695,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_CV_CONST
 			zend_throw_error(NULL, "Object does not support method calls");
 
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 
@@ -39561,6 +39707,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_CV_CONST
 			}
 
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if (IS_CONST == IS_CONST &&
@@ -46473,6 +46620,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_CV_CV_HA
 			zend_throw_error(NULL, "Method name must be a string");
 
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		} while (0);
 	}
@@ -46482,6 +46630,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_CV_CV_HA
 	if (IS_CV == IS_UNUSED && UNEXPECTED(Z_TYPE_P(object) == IS_UNDEF)) {
 		zend_throw_error(NULL, "Using $this when not in object context");
 
+		ZEND_INSERT_DUMMY_STACK_FRAME();
 		HANDLE_EXCEPTION();
 	}
 
@@ -46498,12 +46647,14 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_CV_CV_HA
 					object = GET_OP1_UNDEF_CV(object, BP_VAR_R);
 					if (UNEXPECTED(EG(exception) != NULL)) {
 
+						ZEND_INSERT_DUMMY_STACK_FRAME();
 						HANDLE_EXCEPTION();
 					}
 				}
 				zend_throw_error(NULL, "Call to a member function %s() on %s", Z_STRVAL_P(function_name), zend_get_type_by_const(Z_TYPE_P(object)));
 
 
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 		} while (0);
@@ -46520,6 +46671,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_CV_CV_HA
 			zend_throw_error(NULL, "Object does not support method calls");
 
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 
@@ -46531,6 +46683,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_CV_CV_HA
 			}
 
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if (IS_CV == IS_CONST &&
@@ -50432,6 +50585,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_CV_TMPVA
 			zend_throw_error(NULL, "Method name must be a string");
 			zval_ptr_dtor_nogc(free_op2);
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		} while (0);
 	}
@@ -50441,6 +50595,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_CV_TMPVA
 	if (IS_CV == IS_UNUSED && UNEXPECTED(Z_TYPE_P(object) == IS_UNDEF)) {
 		zend_throw_error(NULL, "Using $this when not in object context");
 		zval_ptr_dtor_nogc(free_op2);
+		ZEND_INSERT_DUMMY_STACK_FRAME();
 		HANDLE_EXCEPTION();
 	}
 
@@ -50457,12 +50612,14 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_CV_TMPVA
 					object = GET_OP1_UNDEF_CV(object, BP_VAR_R);
 					if (UNEXPECTED(EG(exception) != NULL)) {
 						zval_ptr_dtor_nogc(free_op2);
+						ZEND_INSERT_DUMMY_STACK_FRAME();
 						HANDLE_EXCEPTION();
 					}
 				}
 				zend_throw_error(NULL, "Call to a member function %s() on %s", Z_STRVAL_P(function_name), zend_get_type_by_const(Z_TYPE_P(object)));
 				zval_ptr_dtor_nogc(free_op2);
 
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 		} while (0);
@@ -50479,6 +50636,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_CV_TMPVA
 			zend_throw_error(NULL, "Object does not support method calls");
 			zval_ptr_dtor_nogc(free_op2);
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 
@@ -50490,6 +50648,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_CV_TMPVA
 			}
 			zval_ptr_dtor_nogc(free_op2);
 
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if ((IS_TMP_VAR|IS_VAR) == IS_CONST &&
@@ -52648,6 +52807,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_TMPVAR_C
 			zend_throw_error(NULL, "Method name must be a string");
 
 			zval_ptr_dtor_nogc(EX_VAR(opline->op1.var));
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		} while (0);
 	}
@@ -52657,6 +52817,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_TMPVAR_C
 	if ((IS_TMP_VAR|IS_VAR) == IS_UNUSED && UNEXPECTED(Z_TYPE_P(object) == IS_UNDEF)) {
 		zend_throw_error(NULL, "Using $this when not in object context");
 
+		ZEND_INSERT_DUMMY_STACK_FRAME();
 		HANDLE_EXCEPTION();
 	}
 
@@ -52673,12 +52834,14 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_TMPVAR_C
 					object = GET_OP1_UNDEF_CV(object, BP_VAR_R);
 					if (UNEXPECTED(EG(exception) != NULL)) {
 
+						ZEND_INSERT_DUMMY_STACK_FRAME();
 						HANDLE_EXCEPTION();
 					}
 				}
 				zend_throw_error(NULL, "Call to a member function %s() on %s", Z_STRVAL_P(function_name), zend_get_type_by_const(Z_TYPE_P(object)));
 
 				zval_ptr_dtor_nogc(free_op1);
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 		} while (0);
@@ -52695,6 +52858,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_TMPVAR_C
 			zend_throw_error(NULL, "Object does not support method calls");
 
 			zval_ptr_dtor_nogc(free_op1);
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 
@@ -52706,6 +52870,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_TMPVAR_C
 			}
 
 			zval_ptr_dtor_nogc(free_op1);
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if (IS_CONST == IS_CONST &&
@@ -55046,6 +55211,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_TMPVAR_C
 			zend_throw_error(NULL, "Method name must be a string");
 
 			zval_ptr_dtor_nogc(EX_VAR(opline->op1.var));
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		} while (0);
 	}
@@ -55055,6 +55221,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_TMPVAR_C
 	if ((IS_TMP_VAR|IS_VAR) == IS_UNUSED && UNEXPECTED(Z_TYPE_P(object) == IS_UNDEF)) {
 		zend_throw_error(NULL, "Using $this when not in object context");
 
+		ZEND_INSERT_DUMMY_STACK_FRAME();
 		HANDLE_EXCEPTION();
 	}
 
@@ -55071,12 +55238,14 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_TMPVAR_C
 					object = GET_OP1_UNDEF_CV(object, BP_VAR_R);
 					if (UNEXPECTED(EG(exception) != NULL)) {
 
+						ZEND_INSERT_DUMMY_STACK_FRAME();
 						HANDLE_EXCEPTION();
 					}
 				}
 				zend_throw_error(NULL, "Call to a member function %s() on %s", Z_STRVAL_P(function_name), zend_get_type_by_const(Z_TYPE_P(object)));
 
 				zval_ptr_dtor_nogc(free_op1);
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 		} while (0);
@@ -55093,6 +55262,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_TMPVAR_C
 			zend_throw_error(NULL, "Object does not support method calls");
 
 			zval_ptr_dtor_nogc(free_op1);
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 
@@ -55104,6 +55274,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_TMPVAR_C
 			}
 
 			zval_ptr_dtor_nogc(free_op1);
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if (IS_CV == IS_CONST &&
@@ -56327,6 +56498,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_TMPVAR_T
 			zend_throw_error(NULL, "Method name must be a string");
 			zval_ptr_dtor_nogc(free_op2);
 			zval_ptr_dtor_nogc(EX_VAR(opline->op1.var));
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		} while (0);
 	}
@@ -56336,6 +56508,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_TMPVAR_T
 	if ((IS_TMP_VAR|IS_VAR) == IS_UNUSED && UNEXPECTED(Z_TYPE_P(object) == IS_UNDEF)) {
 		zend_throw_error(NULL, "Using $this when not in object context");
 		zval_ptr_dtor_nogc(free_op2);
+		ZEND_INSERT_DUMMY_STACK_FRAME();
 		HANDLE_EXCEPTION();
 	}
 
@@ -56352,12 +56525,14 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_TMPVAR_T
 					object = GET_OP1_UNDEF_CV(object, BP_VAR_R);
 					if (UNEXPECTED(EG(exception) != NULL)) {
 						zval_ptr_dtor_nogc(free_op2);
+						ZEND_INSERT_DUMMY_STACK_FRAME();
 						HANDLE_EXCEPTION();
 					}
 				}
 				zend_throw_error(NULL, "Call to a member function %s() on %s", Z_STRVAL_P(function_name), zend_get_type_by_const(Z_TYPE_P(object)));
 				zval_ptr_dtor_nogc(free_op2);
 				zval_ptr_dtor_nogc(free_op1);
+				ZEND_INSERT_DUMMY_STACK_FRAME();
 				HANDLE_EXCEPTION();
 			}
 		} while (0);
@@ -56374,6 +56549,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_TMPVAR_T
 			zend_throw_error(NULL, "Object does not support method calls");
 			zval_ptr_dtor_nogc(free_op2);
 			zval_ptr_dtor_nogc(free_op1);
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 
@@ -56385,6 +56561,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL ZEND_INIT_METHOD_CALL_SPEC_TMPVAR_T
 			}
 			zval_ptr_dtor_nogc(free_op2);
 			zval_ptr_dtor_nogc(free_op1);
+			ZEND_INSERT_DUMMY_STACK_FRAME();
 			HANDLE_EXCEPTION();
 		}
 		if ((IS_TMP_VAR|IS_VAR) == IS_CONST &&

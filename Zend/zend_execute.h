@@ -363,6 +363,12 @@ void zend_cleanup_unfinished_execution(zend_execute_data *execute_data, uint32_t
 		}                                                \
 	} while (0)
 
+#define ZEND_INSERT_DUMMY_STACK_FRAME() do { \
+		zend_execute_data *call = zend_vm_stack_push_call_frame(ZEND_CALL_NESTED_FUNCTION, (zend_function *) &zend_pass_function, 0, NULL, NULL); \
+		call->prev_execute_data = EX(call); \
+		EX(call) = call; \
+	} while (0)
+
 END_EXTERN_C()
 
 #endif /* ZEND_EXECUTE_H */
