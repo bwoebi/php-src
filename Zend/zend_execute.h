@@ -137,7 +137,7 @@ struct _zend_vm_stack {
 	((ZEND_MM_ALIGNED_SIZE(sizeof(struct _zend_vm_stack)) + ZEND_MM_ALIGNED_SIZE(sizeof(zval)) - 1) / ZEND_MM_ALIGNED_SIZE(sizeof(zval)))
 
 #define ZEND_VM_STACK_ELEMENTS(stack) \
-	(((zval*)(stack)) + ZEND_VM_STACK_HEADER_SLOTS)
+	((zval *) ((((uintptr_t) (stack) + ZEND_VM_STACK_HEADER_SLOTS * sizeof(zval) + ZEND_MM_ALIGNED_SIZE(sizeof(zval)) - ZEND_MM_ALIGNMENT) / ZEND_MM_ALIGNED_SIZE(sizeof(zval))) * ZEND_MM_ALIGNED_SIZE(sizeof(zval))))
 
 /*
  * In general in RELEASE build ZEND_ASSERT() must be zero-cost, but for some
@@ -277,6 +277,71 @@ static zend_always_inline void zend_vm_stack_free_call_frame(zend_execute_data *
 {
 	zend_vm_stack_free_call_frame_ex(ZEND_CALL_INFO(call), call);
 }
+
+#ifdef __SSE2__
+#include <mmintrin.h>
+#include <emmintrin.h>
+
+static zend_always_inline void zend_fast_copy_zvals(zval *dest, const zval *src, size_t size)
+{
+	__m128i *dqdest = (__m128i *) dest;
+	const __m128i *dqsrc = (const __m128i *) src;
+	const __m128i *end;
+	size_t leftover;
+
+	_mm_prefetch(dqsrc + 4, _MM_HINT_NTA);
+	_mm_prefetch(dqdest + 4, _MM_HINT_T0);
+
+	leftover = size & 0x3F;
+	end = (const __m128i *) ((const char *) src + (size & ~0x3F));
+
+	do {
+		_mm_prefetch(dqsrc + 8, _MM_HINT_NTA);
+		_mm_prefetch(dqdest + 8, _MM_HINT_T0);
+
+		__m128i xmm0 = _mm_load_si128(dqsrc);
+		__m128i xmm1 = _mm_load_si128(dqsrc + 1);
+		__m128i xmm2 = _mm_load_si128(dqsrc + 2);
+		__m128i xmm3 = _mm_load_si128(dqsrc + 3);
+
+		dqsrc += 4;
+
+		_mm_store_si128(dqdest, xmm0);
+		_mm_store_si128(dqdest + 1, xmm1);
+		_mm_store_si128(dqdest + 2, xmm2);
+		_mm_store_si128(dqdest + 3, xmm3);
+
+		dqdest += 4;
+	} while (dqsrc != end);
+
+	switch (leftover) {
+		case 0x10: {
+			__m128i xmm0 = _mm_load_si128(dqsrc);
+			_mm_store_si128(dqdest, xmm0);
+		} break;
+		case 0x20: {
+			__m128i xmm0 = _mm_load_si128(dqsrc);
+			__m128i xmm1 = _mm_load_si128(dqsrc + 1);
+			_mm_store_si128(dqdest, xmm0);
+			_mm_store_si128(dqdest + 1, xmm1);
+		} break;
+		case 0x30: {
+			__m128i xmm0 = _mm_load_si128(dqsrc);
+			__m128i xmm1 = _mm_load_si128(dqsrc + 1);
+			__m128i xmm2 = _mm_load_si128(dqsrc + 2);
+			_mm_store_si128(dqdest, xmm0);
+			_mm_store_si128(dqdest + 1, xmm1);
+			_mm_store_si128(dqdest + 2, xmm2);
+		} break;
+		/* leave case 0: + EMPTY_DEFAULT_SWITCH_CASE() out as gcc will generate less optimal asm */
+	}
+}
+#else
+static zend_always_inline void zend_fast_copy_zvals(zval *dest, const zval *src, size_t size)
+{
+	memcpy(dest, src, size);
+}
+#endif
 
 /* services */
 ZEND_API const char *get_active_class_name(const char **space);

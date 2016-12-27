@@ -3962,9 +3962,16 @@ ZEND_VM_HANDLER(41, ZEND_GENERATOR_CREATE, ANY, ANY)
 		 * is allocated on heap.
 		 */
 		num_args = EX_NUM_ARGS();
-		used_stack = (ZEND_CALL_FRAME_SLOT + num_args + EX(func)->op_array.last_var + EX(func)->op_array.T - MIN(EX(func)->op_array.num_args, num_args)) * sizeof(zval);
-		gen_execute_data = (zend_execute_data*)emalloc(used_stack);
-		memcpy(gen_execute_data, execute_data, used_stack);
+		if (UNEXPECTED(EX(func)->op_array.num_args < num_args)) {
+			used_stack = (ZEND_CALL_FRAME_SLOT + EX(func)->op_array.last_var + EX(func)->op_array.T + num_args - EX(func)->op_array.num_args) * sizeof(zval);
+			gen_execute_data = (zend_execute_data *) emalloc(used_stack + sizeof(zval) - ZEND_MM_ALIGNMENT);
+			gen_execute_data = (zend_execute_data *) ((((uintptr_t) gen_execute_data + (sizeof(zval) - ZEND_MM_ALIGNMENT)) / sizeof(zval)) * sizeof(zval));
+			memcpy(gen_execute_data, execute_data, used_stack);
+		} else {
+			gen_execute_data = (zend_execute_data *) emalloc(ZEND_CALL_FRAME_SLOT * sizeof(zval) + sizeof(zval) - ZEND_MM_ALIGNMENT + (EX(func)->op_array.last_var + EX(func)->op_array.T) * sizeof(zval));
+			gen_execute_data = (zend_execute_data *) ((((uintptr_t) gen_execute_data + (sizeof(zval) - ZEND_MM_ALIGNMENT)) / sizeof(zval)) * sizeof(zval));
+			zend_fast_copy_zvals((zval *) gen_execute_data, (zval *) execute_data, (ZEND_CALL_FRAME_SLOT + EX(func)->op_array.last_var) * sizeof(zval)); /* no need to copy temps */
+		}
 
 		/* Save execution context in generator object. */
 		generator = (zend_generator *) Z_OBJ_P(EX(return_value));
