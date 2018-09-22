@@ -74,6 +74,28 @@ foreach ([
   }
 }
 
+echo "\n*** property types\n";
+
+class PropTypeTest {
+	public int $int;
+	public string $string;
+	public array $arr;
+	public iterable $iterable;
+	public stdClass $std;
+	public OtherThing $other;
+	public $mixed;
+}
+
+$reflector = new ReflectionClass(PropTypeTest::class);
+
+foreach ($reflector->getProperties() as $name => $property) {
+	if ($property->hasType()) {
+		printf("public %s $%s;\n",
+			$property->getType(), $property->getName());
+	} else printf("public $%s;\n", $property->getName());
+}
+
+echo "** property types\n";
 ?>
 --EXPECT--
 *** functions
@@ -185,3 +207,13 @@ bool(true)
 bool(false)
 bool(false)
 string(4) "Test"
+
+*** property types
+public int $int;
+public string $string;
+public array $arr;
+public iterable $iterable;
+public stdClass $std;
+public OtherThing $other;
+public $mixed;
+** property types

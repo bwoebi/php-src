@@ -795,12 +795,6 @@ static const char *zend_parse_arg_impl(int arg_num, zval *arg, va_list *va, cons
 				zend_parse_arg_zval_deref(real_arg, p, check_null);
 			}
 			break;
-
-		case 'Z':
-			/* 'Z' iz not supported anymore and should be replaced with 'z' */
-			ZEND_ASSERT(c != 'Z');
-		default:
-			return "unknown";
 	}
 
 	*spec = spec_walk;
@@ -884,12 +878,12 @@ static int zend_parse_va_args(int num_args, const char *type_spec, va_list *va, 
 			case 's': case 'b':
 			case 'r': case 'a':
 			case 'o': case 'O':
-			case 'z': case 'Z':
 			case 'C': case 'h':
 			case 'f': case 'A':
 			case 'H': case 'p':
 			case 'S': case 'P':
-			case 'L':
+			case 'L': case 't':
+			case 'z':
 				max_num_args++;
 				break;
 
@@ -1150,6 +1144,7 @@ ZEND_API int zend_update_class_constants(zend_class_entry *class_type) /* {{{ */
 
 		if (class_type->parent) {
 			if (UNEXPECTED(zend_update_class_constants(class_type->parent) != SUCCESS)) {
+				class_type->ce_flags &= ~ZEND_ACC_CONSTANTS_UPDATED;
 				return FAILURE;
 			}
 		}
@@ -1173,7 +1168,22 @@ ZEND_API int zend_update_class_constants(zend_class_entry *class_type) /* {{{ */
 						val = (zval*)((char*)class_type->default_properties_table + prop_info->offset - OBJ_PROP_TO_OFFSET(0));
 					}
 					if (Z_TYPE_P(val) == IS_CONSTANT_AST) {
-						if (UNEXPECTED(zval_update_constant_ex(val, ce) != SUCCESS)) {
+						if (prop_info->type) {
+							zval tmp;
+
+							ZVAL_COPY(&tmp, val);
+							if (UNEXPECTED(zval_update_constant_ex(&tmp, ce) != SUCCESS)) {
+								return FAILURE;
+							}
+							if (UNEXPECTED(!zend_verify_property_type(prop_info, &tmp, ZEND_CALL_USES_STRICT_TYPES(EG(current_execute_data))))) {
+								zend_verify_property_type_error(prop_info, &tmp);
+								class_type->ce_flags &= ~ZEND_ACC_CONSTANTS_UPDATED;
+								zval_ptr_dtor(&tmp);
+								return FAILURE;
+							}
+							zval_ptr_dtor(val);
+							ZVAL_COPY_VALUE(val, &tmp);
+						} else if (UNEXPECTED(zval_update_constant_ex(val, ce) != SUCCESS)) {
 							return FAILURE;
 						}
 					}
@@ -1228,7 +1238,19 @@ ZEND_API void object_properties_init_ex(zend_object *object, HashTable *properti
 			    property_info &&
 			    (property_info->flags & ZEND_ACC_STATIC) == 0) {
 				zval *slot = OBJ_PROP(object, property_info->offset);
-				ZVAL_COPY_VALUE(slot, prop);
+
+				if (UNEXPECTED(property_info->type)) {
+					zval tmp;
+
+					ZVAL_COPY_VALUE(&tmp, prop);
+					if (UNEXPECTED(!zend_verify_property_type(property_info, &tmp, 0))) {
+						zend_verify_property_type_error(property_info, &tmp);
+						continue;
+					}
+					ZVAL_COPY_VALUE(slot, &tmp);
+				} else {
+					ZVAL_COPY_VALUE(slot, prop);
+				}
 				ZVAL_INDIRECT(prop, slot);
 			}
 		} ZEND_HASH_FOREACH_END();
@@ -3665,9 +3687,13 @@ static inline zend_string *zval_make_interned_string(zval *zv) /* {{{ */
 	return Z_STR_P(zv);
 }
 
-ZEND_API int zend_declare_property_ex(zend_class_entry *ce, zend_string *name, zval *property, int access_type, zend_string *doc_comment) /* {{{ */
+ZEND_API int zend_declare_typed_property(zend_class_entry *ce, zend_string *name, zval *property, int access_type, zend_string *doc_comment, zend_uchar optional_type, zend_string *optional_type_name, zend_bool allow_null) /* {{{ */
 {
 	zend_property_info *property_info, *property_info_ptr;
+
+	if (optional_type && (access_type & ZEND_ACC_STATIC) == 0) {
+		ce->ce_flags |= ZEND_ACC_HAS_TYPE_HINTS;
+	}
 
 	if (ce->type == ZEND_INTERNAL_CLASS) {
 		property_info = pemalloc(sizeof(zend_property_info), 1);
@@ -3740,9 +3766,23 @@ ZEND_API int zend_declare_property_ex(zend_class_entry *ce, zend_string *name, z
 	property_info->flags = access_type;
 	property_info->doc_comment = doc_comment;
 	property_info->ce = ce;
+	if (optional_type_name) {
+		property_info->type = ZEND_TYPE_ENCODE_CLASS(zend_new_interned_string(optional_type_name), allow_null);
+	} else if (optional_type) {
+		property_info->type = ZEND_TYPE_ENCODE(optional_type, allow_null);
+	} else {
+		property_info->type = 0;
+	}
+
 	zend_hash_update_ptr(&ce->properties_info, name, property_info);
 
 	return SUCCESS;
+}
+/* }}} */
+
+ZEND_API int zend_declare_property_ex(zend_class_entry *ce, zend_string *name, zval *property, int access_type, zend_string *doc_comment) /* {{{ */
+{
+	return zend_declare_typed_property(ce, name, property, access_type, doc_comment, 0, NULL, 0);
 }
 /* }}} */
 
@@ -4038,25 +4078,30 @@ ZEND_API void zend_update_property_stringl(zend_class_entry *scope, zval *object
 
 ZEND_API int zend_update_static_property_ex(zend_class_entry *scope, zend_string *name, zval *value) /* {{{ */
 {
-	zval *property;
+	zval *property, tmp;
+	zend_property_info *prop_info;
 	zend_class_entry *old_scope = EG(fake_scope);
 
 	EG(fake_scope) = scope;
-	property = zend_std_get_static_property(scope, name, 0);
+	property = zend_std_get_static_property_with_info(scope, name, BP_VAR_W, &prop_info);
 	EG(fake_scope) = old_scope;
 
 	if (!property) {
 		return FAILURE;
 	}
 
-	if (property != value) {
-		zval garbage;
-		ZVAL_DEREF(property);
-		ZVAL_DEREF(value);
-		ZVAL_COPY_VALUE(&garbage, property);
-		ZVAL_COPY(property, value);
-		zval_ptr_dtor(&garbage);
+	Z_TRY_ADDREF_P(value);
+	if (prop_info->type) {
+		ZVAL_COPY_VALUE(&tmp, value);
+		if (UNEXPECTED(!zend_verify_property_type(prop_info, &tmp, /* strict */ 0))) {
+			zend_verify_property_type_error(prop_info, value);
+			Z_TRY_DELREF_P(value);
+			return FAILURE;
+		}
+		value = &tmp;
 	}
+
+	zend_assign_to_variable(property, value, IS_VAR, /* strict */ 0);
 	return SUCCESS;
 }
 /* }}} */
@@ -4163,7 +4208,7 @@ ZEND_API zval *zend_read_static_property_ex(zend_class_entry *scope, zend_string
 	zend_class_entry *old_scope = EG(fake_scope);
 
 	EG(fake_scope) = scope;
-	property = zend_std_get_static_property(scope, name, silent);
+	property = zend_std_get_static_property(scope, name, silent ? BP_VAR_IS : BP_VAR_R);
 	EG(fake_scope) = old_scope;
 
 	return property;

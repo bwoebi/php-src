@@ -128,7 +128,7 @@ typedef union _zend_parser_stack_elem {
 void zend_compile_top_stmt(zend_ast *ast);
 void zend_compile_stmt(zend_ast *ast);
 void zend_compile_expr(znode *node, zend_ast *ast);
-void zend_compile_var(znode *node, zend_ast *ast, uint32_t type);
+zend_op *zend_compile_var(znode *node, zend_ast *ast, uint32_t type, int by_ref);
 void zend_eval_const_expr(zend_ast **ast_ptr);
 void zend_const_expr_to_zval(zval *result, zend_ast *ast);
 
@@ -217,7 +217,10 @@ typedef struct _zend_oparray_context {
 #define ZEND_ACC_ABSTRACT                (1 <<  6) /*  X  |  X  |     |     */
 #define ZEND_ACC_EXPLICIT_ABSTRACT_CLASS (1 <<  6) /*  X  |     |     |     */
 /*                                                        |     |     |     */
-/* Class Flags (unused: 13...)                            |     |     |     */
+/* Function has typed arguments / class has typed props   |     |     |     */
+#define ZEND_ACC_HAS_TYPE_HINTS          (1 <<  7) /*  X  |  X  |     |     */
+/*                                                        |     |     |     */
+/* Class Flags (unused: 16...)                            |     |     |     */
 /* ===========                                            |     |     |     */
 /*                                                        |     |     |     */
 /* Special class types                                    |     |     |     */
@@ -231,10 +234,6 @@ typedef struct _zend_oparray_context {
 /* class is abstarct, since it is set by any              |     |     |     */
 /* abstract method                                        |     |     |     */
 #define ZEND_ACC_IMPLICIT_ABSTRACT_CLASS (1 <<  4) /*  X  |     |     |     */
-/*                                                        |     |     |     */
-/* Class has magic methods __get/__set/__unset/           |     |     |     */
-/* __isset that use guards                                |     |     |     */
-#define ZEND_ACC_USE_GUARDS              (1 <<  7) /*  X  |     |     |     */
 /*                                                        |     |     |     */
 /* Class constants updated                                |     |     |     */
 #define ZEND_ACC_CONSTANTS_UPDATED       (1 <<  8) /*  X  |     |     |     */
@@ -251,11 +250,12 @@ typedef struct _zend_oparray_context {
 /* User class has methods with static variables           |     |     |     */
 #define ZEND_HAS_STATIC_IN_METHODS       (1 << 12) /*  X  |     |     |     */
 /*                                                        |     |     |     */
+/* Class has magic methods __get/__set/__unset/           |     |     |     */
+/* __isset that use guards                                |     |     |     */
+#define ZEND_ACC_USE_GUARDS              (1 << 15) /*  X  |     |     |     */
+/*                                                        |     |     |     */
 /* Function Flags (unused: 25...30)                       |     |     |     */
 /* ==============                                         |     |     |     */
-/*                                                        |     |     |     */
-/* Immutable op_array (lazy loading)                      |     |     |     */
-#define ZEND_ACC_IMMUTABLE               (1 <<  7) /*     |  X  |     |     */
 /*                                                        |     |     |     */
 /* deprecation flag                                       |     |     |     */
 #define ZEND_ACC_DEPRECATED              (1 <<  8) /*     |  X  |     |     */
@@ -263,8 +263,8 @@ typedef struct _zend_oparray_context {
 /* Function returning by reference                        |     |     |     */
 #define ZEND_ACC_RETURN_REFERENCE        (1 <<  9) /*     |  X  |     |     */
 /*                                                        |     |     |     */
-/* Function has typed arguments                           |     |     |     */
-#define ZEND_ACC_HAS_TYPE_HINTS          (1 << 10) /*     |  X  |     |     */
+/* Immutable op_array (lazy loading)                      |     |     |     */
+#define ZEND_ACC_IMMUTABLE               (1 << 10) /*     |  X  |     |     */
 /*                                                        |     |     |     */
 /* Function has a return type                             |     |     |     */
 #define ZEND_ACC_HAS_RETURN_TYPE         (1 << 11) /*     |  X  |     |     */
@@ -323,6 +323,7 @@ typedef struct _zend_property_info {
 	zend_string *name;
 	zend_string *doc_comment;
 	zend_class_entry *ce;
+	zend_type type;
 } zend_property_info;
 
 #define OBJ_PROP(obj, offset) \
@@ -880,6 +881,9 @@ void zend_assert_valid_class_name(const zend_string *const_name);
 #define ZEND_FETCH_GLOBAL_LOCK	(1<<3)
 
 #define ZEND_FETCH_TYPE_MASK	0xe
+
+#define ZEND_FETCH_REF			(1<<0)
+#define ZEND_FETCH_DIM_WRITE		(1<<1)
 
 #define ZEND_ISEMPTY			(1<<0)
 

@@ -53,6 +53,8 @@
 #define ZEND_VM_EXT_CACHE_SLOT   0x00040000
 #define ZEND_VM_EXT_ARRAY_INIT   0x00080000
 #define ZEND_VM_EXT_REF          0x00100000
+#define ZEND_VM_EXT_FETCH_REF    0x00200000
+#define ZEND_VM_EXT_DIM_WRITE    0x00080000
 #define ZEND_VM_EXT_MASK         0x0f000000
 #define ZEND_VM_EXT_NUM          0x01000000
 #define ZEND_VM_EXT_LAST_CATCH   0x02000000
@@ -269,7 +271,14 @@ END_EXTERN_C()
 #define ZEND_UNSET_CV                        196
 #define ZEND_ISSET_ISEMPTY_CV                197
 #define ZEND_FETCH_LIST_W                    198
+#define ZEND_ASSIGN_OBJ_REF                  199
+#define ZEND_ASSIGN_STATIC_PROP              200
+#define ZEND_ASSIGN_STATIC_PROP_REF          201
+#define ZEND_PRE_INC_STATIC_PROP             202
+#define ZEND_PRE_DEC_STATIC_PROP             203
+#define ZEND_POST_INC_STATIC_PROP            204
+#define ZEND_POST_DEC_STATIC_PROP            205
 
-#define ZEND_VM_LAST_OPCODE                  198
+#define ZEND_VM_LAST_OPCODE                  205
 
 #endif

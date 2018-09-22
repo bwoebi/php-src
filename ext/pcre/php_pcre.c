@@ -967,7 +967,7 @@ static void php_do_pcre_match(INTERNAL_FUNCTION_PARAMETERS, int global) /* {{{ *
 		Z_PARAM_STR(regex)
 		Z_PARAM_STR(subject)
 		Z_PARAM_OPTIONAL
-		Z_PARAM_ZVAL_DEREF(subpats)
+		Z_PARAM_ZVAL(subpats)
 		Z_PARAM_LONG(flags)
 		Z_PARAM_LONG(start_offset)
 	ZEND_PARSE_PARAMETERS_END_EX(RETURN_FALSE);
@@ -1011,8 +1011,10 @@ PHPAPI void php_pcre_match_impl(pcre_cache_entry *pce, char *subject, size_t sub
 
 	/* Overwrite the passed-in value for subpatterns with an empty array. */
 	if (subpats != NULL) {
-		zval_ptr_dtor(subpats);
-		array_init(subpats);
+		subpats = zend_try_array_init(subpats);
+		if (!subpats) {
+			return;
+		}
 	}
 
 	subpats_order = global ? PREG_PATTERN_ORDER : 0;
@@ -2236,7 +2238,7 @@ static void preg_replace_common(INTERNAL_FUNCTION_PARAMETERS, int is_filter)
 		Z_PARAM_ZVAL(subject)
 		Z_PARAM_OPTIONAL
 		Z_PARAM_LONG(limit)
-		Z_PARAM_ZVAL_DEREF(zcount)
+		Z_PARAM_ZVAL(zcount)
 	ZEND_PARSE_PARAMETERS_END();
 
 	if (Z_TYPE_P(replace) != IS_ARRAY) {
@@ -2302,8 +2304,7 @@ static void preg_replace_common(INTERNAL_FUNCTION_PARAMETERS, int is_filter)
 	}
 
 	if (zcount) {
-		zval_ptr_dtor(zcount);
-		ZVAL_LONG(zcount, replace_count);
+		ZEND_TRY_ASSIGN_LONG(zcount, replace_count);
 	}
 }
 /* }}} */
@@ -2333,7 +2334,7 @@ static PHP_FUNCTION(preg_replace_callback)
 		Z_PARAM_ZVAL(subject)
 		Z_PARAM_OPTIONAL
 		Z_PARAM_LONG(limit)
-		Z_PARAM_ZVAL_DEREF(zcount)
+		Z_PARAM_ZVAL(zcount)
 	ZEND_PARSE_PARAMETERS_END();
 
 	if (!zend_is_callable_ex(replace, NULL, 0, NULL, &fcc, NULL)) {
@@ -2350,8 +2351,7 @@ static PHP_FUNCTION(preg_replace_callback)
 
 	replace_count = preg_replace_func_impl(return_value, regex, &fci, &fcc, subject, limit);
 	if (zcount) {
-		zval_ptr_dtor(zcount);
-		ZVAL_LONG(zcount, replace_count);
+		ZEND_TRY_ASSIGN_LONG(zcount, replace_count);
 	}
 }
 /* }}} */
@@ -2373,7 +2373,7 @@ static PHP_FUNCTION(preg_replace_callback_array)
 		Z_PARAM_ZVAL(subject)
 		Z_PARAM_OPTIONAL
 		Z_PARAM_LONG(limit)
-		Z_PARAM_ZVAL_DEREF(zcount)
+		Z_PARAM_ZVAL(zcount)
 	ZEND_PARSE_PARAMETERS_END();
 
 	fci.size = sizeof(fci);
@@ -2418,8 +2418,7 @@ static PHP_FUNCTION(preg_replace_callback_array)
 	} ZEND_HASH_FOREACH_END();
 
 	if (zcount) {
-		zval_ptr_dtor(zcount);
-		ZVAL_LONG(zcount, replace_count);
+		ZEND_TRY_ASSIGN_LONG(zcount, replace_count);
 	}
 }
 /* }}} */

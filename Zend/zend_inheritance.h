@@ -32,6 +32,8 @@ ZEND_API void zend_do_link_class(zend_class_entry *ce, zend_class_entry *parent_
 void zend_verify_abstract_class(zend_class_entry *ce);
 void zend_check_deprecated_constructor(const zend_class_entry *ce);
 
+zend_string* zend_resolve_property_type(zend_string *name, zend_class_entry *scope);
+
 END_EXTERN_C()
 
 #endif

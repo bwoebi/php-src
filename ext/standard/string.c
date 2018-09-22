@@ -3654,16 +3654,12 @@ PHP_FUNCTION(similar_text)
 		Z_PARAM_STR(t1)
 		Z_PARAM_STR(t2)
 		Z_PARAM_OPTIONAL
-		Z_PARAM_ZVAL_DEREF(percent)
+		Z_PARAM_ZVAL(percent)
 	ZEND_PARSE_PARAMETERS_END();
-
-	if (ac > 2) {
-		convert_to_double_ex(percent);
-	}
 
 	if (ZSTR_LEN(t1) + ZSTR_LEN(t2) == 0) {
 		if (ac > 2) {
-			Z_DVAL_P(percent) = 0;
+			ZEND_TRY_ASSIGN_DOUBLE(percent, 0);
 		}
 
 		RETURN_LONG(0);
@@ -3672,7 +3668,7 @@ PHP_FUNCTION(similar_text)
 	sim = php_similar_char(ZSTR_VAL(t1), ZSTR_LEN(t1), ZSTR_VAL(t2), ZSTR_LEN(t2));
 
 	if (ac > 2) {
-		Z_DVAL_P(percent) = sim * 200.0 / (ZSTR_LEN(t1) + ZSTR_LEN(t2));
+		ZEND_TRY_ASSIGN_DOUBLE(percent, sim * 200.0 / (ZSTR_LEN(t1) + ZSTR_LEN(t2)));
 	}
 
 	RETURN_LONG(sim);
@@ -4441,7 +4437,7 @@ static void php_str_replace_common(INTERNAL_FUNCTION_PARAMETERS, int case_sensit
 		Z_PARAM_ZVAL(replace)
 		Z_PARAM_ZVAL(subject)
 		Z_PARAM_OPTIONAL
-		Z_PARAM_ZVAL_DEREF(zcount)
+		Z_PARAM_ZVAL(zcount)
 	ZEND_PARSE_PARAMETERS_END();
 
 	/* Make sure we're dealing with strings and do the replacement. */
@@ -4478,8 +4474,7 @@ static void php_str_replace_common(INTERNAL_FUNCTION_PARAMETERS, int case_sensit
 		count = php_str_replace_in_subject(search, replace, subject, return_value, case_sensitivity);
 	}
 	if (argc > 3) {
-		zval_ptr_dtor(zcount);
-		ZVAL_LONG(zcount, count);
+		ZEND_TRY_ASSIGN_LONG(zcount, count);
 	}
 }
 /* }}} */
@@ -4905,7 +4900,7 @@ PHP_FUNCTION(parse_str)
 	ZEND_PARSE_PARAMETERS_START(1, 2)
 		Z_PARAM_STRING(arg, arglen)
 		Z_PARAM_OPTIONAL
-		Z_PARAM_ZVAL_DEREF(arrayArg)
+		Z_PARAM_ZVAL(arrayArg)
 	ZEND_PARSE_PARAMETERS_END();
 
 	res = estrndup(arg, arglen);
@@ -4927,9 +4922,11 @@ PHP_FUNCTION(parse_str)
 			zend_throw_error(NULL, "Cannot re-assign $this");
 		}
 	} else 	{
-		/* Clear out the array that was passed in. */
-		zval_ptr_dtor(arrayArg);
-		array_init(arrayArg);
+		arrayArg = zend_try_array_init(arrayArg);
+		if (!arrayArg) {
+			return;
+		}
+
 		sapi_module.treat_data(PARSE_STRING, res, arrayArg);
 	}
 }
