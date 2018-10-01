@@ -3665,6 +3665,23 @@ static inline zend_string *zval_make_interned_string(zval *zv) /* {{{ */
 	return Z_STR_P(zv);
 }
 
+void zend_delete_property_info_internal(zend_class_entry *ce, zend_property_info *prop_info) {
+	if (prop_info->ce == ce) {
+		zend_string_release_ex(prop_info->name, 1);
+		free(prop_info);
+	}
+}
+
+void zend_delete_property_info(zend_class_entry *ce, zend_string *name) {
+	if (ce->type == ZEND_INTERNAL_CLASS) {
+		zend_property_info *prop_info = zend_hash_find_ptr(&ce->properties_info, name);
+		if (prop_info) {
+			zend_delete_property_info_internal(ce, prop_info);
+		}
+	}
+	zend_hash_del(&ce->properties_info, name);
+}
+
 ZEND_API int zend_declare_property_ex(zend_class_entry *ce, zend_string *name, zval *property, int access_type, zend_string *doc_comment) /* {{{ */
 {
 	zend_property_info *property_info, *property_info_ptr;
@@ -3690,7 +3707,6 @@ ZEND_API int zend_declare_property_ex(zend_class_entry *ce, zend_string *name, z
 		    (property_info_ptr->flags & ZEND_ACC_STATIC) != 0) {
 			property_info->offset = property_info_ptr->offset;
 			zval_ptr_dtor(&ce->default_static_members_table[property_info->offset]);
-			zend_hash_del(&ce->properties_info, name);
 		} else {
 			property_info->offset = ce->default_static_members_count++;
 			ce->default_static_members_table = perealloc(ce->default_static_members_table, sizeof(zval) * ce->default_static_members_count, ce->type == ZEND_INTERNAL_CLASS);
@@ -3704,7 +3720,6 @@ ZEND_API int zend_declare_property_ex(zend_class_entry *ce, zend_string *name, z
 		    (property_info_ptr->flags & ZEND_ACC_STATIC) == 0) {
 			property_info->offset = property_info_ptr->offset;
 			zval_ptr_dtor(&ce->default_properties_table[OBJ_PROP_TO_NUM(property_info->offset)]);
-			zend_hash_del(&ce->properties_info, name);
 		} else {
 			property_info->offset = OBJ_PROP_TO_OFFSET(ce->default_properties_count);
 			ce->default_properties_count++;
@@ -3740,7 +3755,9 @@ ZEND_API int zend_declare_property_ex(zend_class_entry *ce, zend_string *name, z
 	property_info->flags = access_type;
 	property_info->doc_comment = doc_comment;
 	property_info->ce = ce;
-	zend_hash_update_ptr(&ce->properties_info, name, property_info);
+
+	zend_delete_property_info(ce, name);
+	zend_hash_add_ptr(&ce->properties_info, name, property_info);
 
 	return SUCCESS;
 }

@@ -306,6 +306,9 @@ ZEND_API void destroy_zend_class(zval *zv)
 				}
 				free(ce->default_static_members_table);
 			}
+			ZEND_HASH_FOREACH_PTR(&ce->properties_info, prop_info) {
+				zend_delete_property_info_internal(ce, prop_info);
+			} ZEND_HASH_FOREACH_END();
 			zend_hash_destroy(&ce->properties_info);
 			zend_string_release_ex(ce->name, 1);
 

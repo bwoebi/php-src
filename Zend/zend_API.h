@@ -358,6 +358,9 @@ ZEND_API zval *zend_read_property(zend_class_entry *scope, zval *object, const c
 ZEND_API zval *zend_read_static_property_ex(zend_class_entry *scope, zend_string *name, zend_bool silent);
 ZEND_API zval *zend_read_static_property(zend_class_entry *scope, const char *name, size_t name_length, zend_bool silent);
 
+void zend_delete_property_info_internal(zend_class_entry *ce, zend_property_info *prop_info);
+void zend_delete_property_info(zend_class_entry *ce, zend_string *name);
+
 ZEND_API char *zend_get_type_by_const(int type);
 
 #define getThis()							((Z_TYPE(EX(This)) == IS_OBJECT) ? &EX(This) : NULL)

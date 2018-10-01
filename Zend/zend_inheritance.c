@@ -31,15 +31,6 @@ static void overridden_ptr_dtor(zval *zv) /* {{{ */
 }
 /* }}} */
 
-static zend_property_info *zend_duplicate_property_info_internal(zend_property_info *property_info) /* {{{ */
-{
-	zend_property_info* new_property_info = pemalloc(sizeof(zend_property_info), 1);
-	memcpy(new_property_info, property_info, sizeof(zend_property_info));
-	zend_string_addref(new_property_info->name);
-	return new_property_info;
-}
-/* }}} */
-
 static zend_function *zend_duplicate_function(zend_function *func, zend_class_entry *ce) /* {{{ */
 {
 	zend_function *new_function;
@@ -692,11 +683,7 @@ static void do_inherit_property(zend_property_info *parent_info, zend_string *ke
 			}
 		}
 	} else {
-		if (UNEXPECTED(ce->type & ZEND_INTERNAL_CLASS)) {
-			child_info = zend_duplicate_property_info_internal(parent_info);
-		} else {
-			child_info = parent_info;
-		}
+		child_info = parent_info;
 		_zend_hash_append_ptr(&ce->properties_info, key, child_info);
 	}
 }
