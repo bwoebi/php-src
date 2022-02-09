@@ -45,6 +45,19 @@ namespace {
 
     }
 
+    final class ZendTestParameterAttribute {
+
+    }
+
+    class ZendTestClassWithMethodWithParameterAttribute {
+        final public function no_override(#[ZendTestParameterAttribute] string $parameter): int {}
+        public function override(#[ZendTestParameterAttribute] string $parameter): int {}
+    }
+
+    class ZendTestChildClassWithMethodWithParameterAttribute extends ZendTestClassWithMethodWithParameterAttribute {
+        public function override(#[ZendTestParameterAttribute] string $parameter): int {}
+    }
+
     enum ZendTestUnitEnum {
         case Foo;
         case Bar;
@@ -92,6 +105,8 @@ namespace {
     function zend_weakmap_dump(): array {}
 
     function zend_get_unit_enum(): ZendTestUnitEnum {}
+
+    function zend_test_parameter_with_attribute(#[ZendTestParameterAttribute] string $parameter): int {}
 }
 
 namespace ZendTestNS {
