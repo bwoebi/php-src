@@ -665,6 +665,15 @@ static void function_copy_ctor(zval *zv) /* {{{ */
 		}
 		func->common.arg_info = new_arg_info + 1;
 	}
+	if (old_func->common.attributes) {
+		zend_attribute *attr;
+
+		func->common.attributes = NULL;
+
+		ZEND_HASH_PACKED_FOREACH_PTR(old_func->common.attributes, attr) {
+			zend_add_attribute(&func->common.attributes, attr->name, attr->argc, attr->flags, attr->offset, attr->lineno);
+		} ZEND_HASH_FOREACH_END();
+	}
 }
 /* }}} */
 
