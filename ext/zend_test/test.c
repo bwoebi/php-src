@@ -531,7 +531,7 @@ PHP_MINIT_FUNCTION(zend_test)
 			1
 		);
 
-		ZVAL_STRINGL(&attr->args[0].value, "value1", sizeof("value1") - 1);
+		ZVAL_STRING(&attr->args[0].value, "value1");
 	}
 
 	zend_test_class_with_method_with_parameter_attribute = register_class_ZendTestClassWithMethodWithParameterAttribute();
@@ -546,7 +546,7 @@ PHP_MINIT_FUNCTION(zend_test)
 			1
 		);
 
-		ZVAL_STRINGL(&attr->args[0].value, "value2", sizeof("value2") - 1);
+		ZVAL_STRING(&attr->args[0].value, "value2");
 
 		attr = zend_add_parameter_attribute(
 			zend_hash_str_find_ptr(&zend_test_class_with_method_with_parameter_attribute->function_table, "override", sizeof("override") - 1),
@@ -555,7 +555,7 @@ PHP_MINIT_FUNCTION(zend_test)
 			1
 		);
 
-		ZVAL_STRINGL(&attr->args[0].value, "value3", sizeof("value3") - 1);
+		ZVAL_STRING(&attr->args[0].value, "value3");
 	}
 
 	zend_test_child_class_with_method_with_parameter_attribute = register_class_ZendTestChildClassWithMethodWithParameterAttribute(zend_test_class_with_method_with_parameter_attribute);
@@ -570,7 +570,7 @@ PHP_MINIT_FUNCTION(zend_test)
 			1
 		);
 
-		ZVAL_STRINGL(&attr->args[0].value, "value4", sizeof("value4") - 1);
+		ZVAL_STRING(&attr->args[0].value, "value4");
 	}
 
 	zend_test_ns_foo_class = register_class_ZendTestNS_Foo();
