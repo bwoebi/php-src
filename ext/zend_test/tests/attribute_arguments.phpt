@@ -26,7 +26,6 @@ var_dump($attribute->getArguments());
 var_dump($attribute->newInstance());
 
 $reflection = new ReflectionMethod("ZendTestChildClassWithMethodWithParameterAttribute", "override");
-var_dump($reflection->getParameters()[0]);
 $attribute = $reflection->getParameters()[0]->getAttributes()[0];
 var_dump($attribute->getArguments());
 var_dump($attribute->newInstance());
