@@ -1047,12 +1047,6 @@ ZEND_API void function_add_ref(zend_function *function) /* {{{ */
 
 		ZEND_MAP_PTR_INIT(op_array->run_time_cache, NULL);
 		ZEND_MAP_PTR_INIT(op_array->static_variables_ptr, NULL);
-	} else {
-		ZEND_ASSERT(function->type == ZEND_INTERNAL_FUNCTION);
-
-		if (function->common.attributes) {
-			GC_TRY_ADDREF(function->common.attributes);
-		}
 	}
 
 	if (function->common.function_name) {
