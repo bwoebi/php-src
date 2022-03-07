@@ -439,6 +439,17 @@ static ZEND_METHOD(ZendTestNS2_ZendSubNS_Foo, method)
 	ZEND_PARSE_PARAMETERS_NONE();
 }
 
+static ZEND_METHOD(ZendTestParameterAttribute, __construct)
+{
+	zend_string *parameter;
+
+	ZEND_PARSE_PARAMETERS_START(1, 1)
+		Z_PARAM_STR(parameter)
+	ZEND_PARSE_PARAMETERS_END();
+
+	ZVAL_STR_COPY(OBJ_PROP_NUM(Z_OBJ_P(ZEND_THIS), 0), parameter);
+}
+
 static ZEND_METHOD(ZendTestClassWithMethodWithParameterAttribute, no_override)
 {
 	zend_string *parameter;
@@ -510,36 +521,57 @@ PHP_MINIT_FUNCTION(zend_test)
 	zend_test_parameter_attribute = register_class_ZendTestParameterAttribute();
 	zend_internal_attribute_register(zend_test_parameter_attribute, ZEND_ATTRIBUTE_TARGET_PARAMETER);
 
-	zend_add_parameter_attribute(
-		zend_hash_str_find_ptr(CG(function_table), "zend_test_parameter_with_attribute", sizeof("zend_test_parameter_with_attribute") - 1),
-		0,
-		zend_test_parameter_attribute->name,
-		0
-	);
+	{
+		zend_attribute *attr;
+
+		attr = zend_add_parameter_attribute(
+			zend_hash_str_find_ptr(CG(function_table), "zend_test_parameter_with_attribute", sizeof("zend_test_parameter_with_attribute") - 1),
+			0,
+			zend_test_parameter_attribute->name,
+			1
+		);
+
+		ZVAL_STRINGL(&attr->args[0].value, "value1", sizeof("value1") - 1);
+	}
 
 	zend_test_class_with_method_with_parameter_attribute = register_class_ZendTestClassWithMethodWithParameterAttribute();
 
-	zend_add_parameter_attribute(
-		zend_hash_str_find_ptr(&zend_test_class_with_method_with_parameter_attribute->function_table, "no_override", sizeof("no_override") - 1),
-		0,
-		zend_test_parameter_attribute->name,
-		0
-	);
-	zend_add_parameter_attribute(
-		zend_hash_str_find_ptr(&zend_test_class_with_method_with_parameter_attribute->function_table, "override", sizeof("override") - 1),
-		0,
-		zend_test_parameter_attribute->name,
-		0
-	);
+	{
+		zend_attribute *attr;
+
+		attr = zend_add_parameter_attribute(
+			zend_hash_str_find_ptr(&zend_test_class_with_method_with_parameter_attribute->function_table, "no_override", sizeof("no_override") - 1),
+			0,
+			zend_test_parameter_attribute->name,
+			1
+		);
+
+		ZVAL_STRINGL(&attr->args[0].value, "value2", sizeof("value2") - 1);
+
+		attr = zend_add_parameter_attribute(
+			zend_hash_str_find_ptr(&zend_test_class_with_method_with_parameter_attribute->function_table, "override", sizeof("override") - 1),
+			0,
+			zend_test_parameter_attribute->name,
+			1
+		);
+
+		ZVAL_STRINGL(&attr->args[0].value, "value3", sizeof("value3") - 1);
+	}
 
 	zend_test_child_class_with_method_with_parameter_attribute = register_class_ZendTestChildClassWithMethodWithParameterAttribute(zend_test_class_with_method_with_parameter_attribute);
 
-	zend_add_parameter_attribute(
-		zend_hash_str_find_ptr(&zend_test_child_class_with_method_with_parameter_attribute->function_table, "override", sizeof("override") - 1),
-		0,
-		zend_test_parameter_attribute->name,
-		0
-	);
+	{
+		zend_attribute *attr;
+
+		attr = zend_add_parameter_attribute(
+			zend_hash_str_find_ptr(&zend_test_child_class_with_method_with_parameter_attribute->function_table, "override", sizeof("override") - 1),
+			0,
+			zend_test_parameter_attribute->name,
+			1
+		);
+
+		ZVAL_STRINGL(&attr->args[0].value, "value4", sizeof("value4") - 1);
+	}
 
 	zend_test_ns_foo_class = register_class_ZendTestNS_Foo();
 	zend_test_ns2_foo_class = register_class_ZendTestNS2_Foo();

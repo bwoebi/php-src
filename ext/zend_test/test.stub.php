@@ -46,16 +46,18 @@ namespace {
     }
 
     final class ZendTestParameterAttribute {
+        public string $parameter;
 
+        public function __construct(string $parameter) {}
     }
 
     class ZendTestClassWithMethodWithParameterAttribute {
-        final public function no_override(#[ZendTestParameterAttribute] string $parameter): int {}
-        public function override(#[ZendTestParameterAttribute] string $parameter): int {}
+        final public function no_override(string $parameter): int {}
+        public function override(string $parameter): int {}
     }
 
     class ZendTestChildClassWithMethodWithParameterAttribute extends ZendTestClassWithMethodWithParameterAttribute {
-        public function override(#[ZendTestParameterAttribute] string $parameter): int {}
+        public function override(string $parameter): int {}
     }
 
     enum ZendTestUnitEnum {
