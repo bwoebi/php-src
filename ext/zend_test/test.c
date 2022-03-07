@@ -535,7 +535,7 @@ PHP_MINIT_FUNCTION(zend_test)
 	zend_test_child_class_with_method_with_parameter_attribute = register_class_ZendTestChildClassWithMethodWithParameterAttribute(zend_test_class_with_method_with_parameter_attribute);
 
 	zend_add_parameter_attribute(
-		zend_hash_str_find_ptr(&zend_test_class_with_method_with_parameter_attribute->function_table, "override", sizeof("override") - 1),
+		zend_hash_str_find_ptr(&zend_test_child_class_with_method_with_parameter_attribute->function_table, "override", sizeof("override") - 1),
 		0,
 		zend_test_parameter_attribute->name,
 		0
