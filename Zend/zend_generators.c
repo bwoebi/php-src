@@ -224,68 +224,74 @@ static void zend_generator_dtor_storage(zend_object *object) /* {{{ */
 		clear_link_to_leaf(generator);
 	}
 
-	if (EXPECTED(!ex) || EXPECTED(!(ex->func->op_array.fn_flags & ZEND_ACC_HAS_FINALLY_BLOCK))
-			|| CG(unclean_shutdown)) {
+	if (EXPECTED(!ex)) {
 		zend_generator_close(generator, 0);
 		return;
 	}
 
-	/* -1 required because we want the last run opcode, not the
-	 * next to-be-run one. */
-	op_num = ex->opline - ex->func->op_array.opcodes - 1;
-	try_catch_offset = -1;
+	if (UNEXPECTED((ex->func->op_array.fn_flags & ZEND_ACC_HAS_FINALLY_BLOCK) != 0) && !CG(unclean_shutdown)) {
+		/* -1 required because we want the last run opcode, not the
+		 * next to-be-run one. */
+		op_num = ex->opline - ex->func->op_array.opcodes - 1;
+		try_catch_offset = -1;
 
-	/* Find the innermost try/catch that we are inside of. */
-	for (i = 0; i < ex->func->op_array.last_try_catch; i++) {
-		zend_try_catch_element *try_catch = &ex->func->op_array.try_catch_array[i];
-		if (op_num < try_catch->try_op) {
-			break;
+		/* Find the innermost try/catch that we are inside of. */
+		for (i = 0; i < ex->func->op_array.last_try_catch; i++) {
+			zend_try_catch_element *try_catch = &ex->func->op_array.try_catch_array[i];
+			if (op_num < try_catch->try_op) {
+				break;
+			}
+			if (op_num < try_catch->catch_op || op_num < try_catch->finally_end) {
+				try_catch_offset = i;
+			}
 		}
-		if (op_num < try_catch->catch_op || op_num < try_catch->finally_end) {
-			try_catch_offset = i;
-		}
-	}
 
-	/* Walk try/catch/finally structures upwards, performing the necessary actions. */
-	while (try_catch_offset != (uint32_t) -1) {
-		zend_try_catch_element *try_catch = &ex->func->op_array.try_catch_array[try_catch_offset];
+		/* Walk try/catch/finally structures upwards, performing the necessary actions. */
+		while (try_catch_offset != (uint32_t) -1) {
+			zend_try_catch_element *try_catch = &ex->func->op_array.try_catch_array[try_catch_offset];
 
-		if (op_num < try_catch->finally_op) {
-			/* Go to finally block */
-			zval *fast_call =
-				ZEND_CALL_VAR(ex, ex->func->op_array.opcodes[try_catch->finally_end].op1.var);
+			if (op_num < try_catch->finally_op) {
+				/* Go to finally block */
+				zval *fast_call =
+						ZEND_CALL_VAR(ex, ex->func->op_array.opcodes[try_catch->finally_end].op1.var);
 
-			zend_generator_cleanup_unfinished_execution(generator, ex, try_catch->finally_op);
-			Z_OBJ_P(fast_call) = EG(exception);
-			EG(exception) = NULL;
-			Z_OPLINE_NUM_P(fast_call) = (uint32_t)-1;
+				zend_generator_cleanup_unfinished_execution(generator, ex, try_catch->finally_op);
+				Z_OBJ_P(fast_call) = EG(exception);
+				EG(exception) = NULL;
+				Z_OPLINE_NUM_P(fast_call) = (uint32_t) -1;
 
-			ex->opline = &ex->func->op_array.opcodes[try_catch->finally_op];
-			generator->flags |= ZEND_GENERATOR_FORCED_CLOSE;
-			zend_generator_resume(generator);
+				ex->opline = &ex->func->op_array.opcodes[try_catch->finally_op];
+				generator->flags |= ZEND_GENERATOR_FORCED_CLOSE;
+				zend_generator_resume(generator);
 
-			/* TODO: If we hit another yield inside try/finally,
-			 * should we also jump to the next finally block? */
-			break;
-		} else if (op_num < try_catch->finally_end) {
-			zval *fast_call =
-				ZEND_CALL_VAR(ex, ex->func->op_array.opcodes[try_catch->finally_end].op1.var);
-			/* Clean up incomplete return statement */
-			if (Z_OPLINE_NUM_P(fast_call) != (uint32_t) -1) {
-				zend_op *retval_op = &ex->func->op_array.opcodes[Z_OPLINE_NUM_P(fast_call)];
-				if (retval_op->op2_type & (IS_TMP_VAR | IS_VAR)) {
-					zval_ptr_dtor(ZEND_CALL_VAR(ex, retval_op->op2.var));
+				/* TODO: If we hit another yield inside try/finally,
+				 * should we also jump to the next finally block? */
+				zend_generator_close(generator, 0);
+				return;
+			} else if (op_num < try_catch->finally_end) {
+				zval *fast_call =
+						ZEND_CALL_VAR(ex, ex->func->op_array.opcodes[try_catch->finally_end].op1.var);
+				/* Clean up incomplete return statement */
+				if (Z_OPLINE_NUM_P(fast_call) != (uint32_t) -1) {
+					zend_op *retval_op = &ex->func->op_array.opcodes[Z_OPLINE_NUM_P(fast_call)];
+					if (retval_op->op2_type & (IS_TMP_VAR | IS_VAR)) {
+						zval_ptr_dtor(ZEND_CALL_VAR(ex, retval_op->op2.var));
+					}
+				}
+				/* Clean up backed-up exception */
+				if (Z_OBJ_P(fast_call)) {
+					OBJ_RELEASE(Z_OBJ_P(fast_call));
 				}
 			}
-			/* Clean up backed-up exception */
-			if (Z_OBJ_P(fast_call)) {
-				OBJ_RELEASE(Z_OBJ_P(fast_call));
-			}
-		}
 
-		try_catch_offset--;
+			try_catch_offset--;
+		}
 	}
 
+	if (ZEND_OBSERVER_ENABLED) {
+		zend_observer_generator_resume(ex);
+		zend_observer_fcall_end(ex, NULL);
+	}
 	zend_generator_close(generator, 0);
 }
 /* }}} */

@@ -51,6 +51,9 @@ PHP 8.2 INTERNALS UPGRADE NOTES
   are deprecated (see main UPGRADING notes). To suppress the notice, e.g. to
   avoid duplicates when processing the same value multiple times, pass or add
   IS_CALLABLE_SUPPRESS_DEPRECATIONS to the check_flags parameter.
+* Observed generators now always emit an observer begin and followed by an
+  immediate end event upon destruction, if the generator is still alive,
+  regardless of whether zend_execute_ex will be called.
 
 ========================
 2. Build system changes

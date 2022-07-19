@@ -96,6 +96,8 @@ var_dump(foo());
         </TestClass::{closure}>
       </TestClass::foo>
     </gen>
+    <gen>
+    </gen>
   </foo>
 array(2) {
   [0]=>

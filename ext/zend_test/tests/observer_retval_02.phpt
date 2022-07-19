@@ -30,3 +30,5 @@ echo 'Done' . PHP_EOL;
   </foo:'Me too!'>
 Done
 </file '%s%eobserver_retval_%d.php'>
+<foo>
+</foo:NULL>
