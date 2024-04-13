@@ -194,6 +194,7 @@ void startup_scanner(void)
 	zend_stack_init(&SCNG(nest_location_stack), sizeof(zend_nest_location));
 	zend_ptr_stack_init(&SCNG(heredoc_label_stack));
 	SCNG(heredoc_scan_ahead) = 0;
+	SCNG(parsing_macro) = 0;
 }
 
 static void heredoc_label_dtor(zend_heredoc_label *heredoc_label) {
@@ -1260,12 +1261,18 @@ static void report_bad_nesting(char opening, int opening_lineno, char closing)
 
 static void enter_nesting(char opening)
 {
+	if (SCNG(parsing_macro) && opening != '(') {
+		return;
+	}
 	zend_nest_location nest_loc = {opening, CG(zend_lineno)};
 	zend_stack_push(&SCNG(nest_location_stack), &nest_loc);
 }
 
 static zend_result exit_nesting(char closing)
 {
+	if (SCNG(parsing_macro) && closing != ')') {
+		return SUCCESS;
+	}
 	if (zend_stack_is_empty(&SCNG(nest_location_stack))) {
 		zend_throw_exception_ex(zend_ce_parse_error, 0, "Unmatched '%c'", closing);
 		return FAILURE;
@@ -1299,6 +1306,9 @@ static zend_result check_nesting_at_end(void)
 #define PARSER_MODE() \
 	EXPECTED(elem != NULL)
 
+#define STRICT_PARSER_MODE() \
+	EXPECTED(elem != NULL && !SCNG(parsing_macro))
+
 #define RETURN_TOKEN(_token) do { \
 		token = _token; \
 		goto emit_token; \
@@ -1322,7 +1332,7 @@ static zend_result check_nesting_at_end(void)
 
 #define RETURN_OR_SKIP_TOKEN(_token) do { \
 		token = _token; \
-		if (PARSER_MODE()) { \
+		if (STRICT_PARSER_MODE()) { \
 			goto skip_token; \
 		} \
 		goto emit_token; \
@@ -1636,7 +1646,7 @@ OPTIONAL_WHITESPACE_OR_COMMENTS ({WHITESPACE}|{MULTI_LINE_COMMENT}|{SINGLE_LINE_
 }
 
 <ST_IN_SCRIPTING>"("{TABS_AND_SPACES}"real"{TABS_AND_SPACES}")" {
-	if (PARSER_MODE()) {
+	if (STRICT_PARSER_MODE()) {
 		zend_throw_exception(zend_ce_parse_error, "The (real) cast has been removed, use (float) instead", 0);
 		RETURN_TOKEN(T_ERROR);
 	}
@@ -2049,7 +2059,7 @@ OPTIONAL_WHITESPACE_OR_COMMENTS ({WHITESPACE}|{MULTI_LINE_COMMENT}|{SINGLE_LINE_
 		for (i = 0; i < len; i++) {
 			if (lnum[i] == '8' || lnum[i] == '9') {
 				zend_throw_exception(zend_ce_parse_error, "Invalid numeric literal", 0);
-				if (PARSER_MODE()) {
+				if (STRICT_PARSER_MODE()) {
 					if (contains_underscores) {
 						efree(lnum);
 					}
@@ -2446,12 +2456,14 @@ inline_char_handler:
 }
 
 <ST_IN_SCRIPTING>"?>"{NEWLINE}? {
-	BEGIN(INITIAL);
-	if (yytext[yyleng-1] != '>') {
-		CG(increment_lineno) = 1;
-	}
-	if (PARSER_MODE()) {
-		RETURN_TOKEN(';');  /* implicit ';' at php-end tag */
+	if (!SCNG(parsing_macro)) {
+		BEGIN(INITIAL);
+		if (yytext[yyleng-1] != '>') {
+			CG(increment_lineno) = 1;
+		}
+		if (PARSER_MODE()) {
+			RETURN_TOKEN(';');  /* implicit ';' at php-end tag */
+		}
 	}
 	RETURN_TOKEN(T_CLOSE_TAG);
 }
@@ -2561,7 +2573,7 @@ skip_escape_conversion:
 			case '"':
 				yyleng = YYCURSOR - SCNG(yy_text);
 				if (EXPECTED(zend_scan_escape_string(zendlval, yytext+bprefix+1, yyleng-bprefix-2, '"') == SUCCESS)
-				 || !PARSER_MODE()) {
+				 || !STRICT_PARSER_MODE()) {
 					RETURN_TOKEN_WITH_VAL(T_CONSTANT_ENCAPSED_STRING);
 				} else {
 					RETURN_TOKEN(T_ERROR);
@@ -2656,7 +2668,7 @@ skip_escape_conversion:
 		if (!IS_LABEL_SUCCESSOR(YYCURSOR[heredoc_label->length])) {
 			if (spacing == (HEREDOC_USING_SPACES | HEREDOC_USING_TABS)) {
 				zend_throw_exception(zend_ce_parse_error, "Invalid indentation - tabs and spaces cannot be mixed", 0);
-				if (PARSER_MODE()) {
+				if (STRICT_PARSER_MODE()) {
 					RETURN_TOKEN(T_ERROR);
 				}
 			}
@@ -2736,7 +2748,7 @@ skip_escape_conversion:
 		CG(increment_lineno) = 0;
 		CG(doc_comment) = saved_doc_comment;
 
-		if (PARSER_MODE() && error) {
+		if (STRICT_PARSER_MODE() && error) {
 			RETURN_TOKEN(T_ERROR);
 		}
 	}
@@ -2830,7 +2842,7 @@ double_quotes_scan_done:
 	yyleng = YYCURSOR - SCNG(yy_text);
 
 	if (EXPECTED(zend_scan_escape_string(zendlval, yytext, yyleng, '"') == SUCCESS)
-	 || !PARSER_MODE()) {
+	 || !STRICT_PARSER_MODE()) {
 		RETURN_TOKEN_WITH_VAL(T_ENCAPSED_AND_WHITESPACE);
 	} else {
 		RETURN_TOKEN(T_ERROR);
@@ -2876,7 +2888,7 @@ double_quotes_scan_done:
 	yyleng = YYCURSOR - SCNG(yy_text);
 
 	if (EXPECTED(zend_scan_escape_string(zendlval, yytext, yyleng, '`') == SUCCESS)
-	 || !PARSER_MODE()) {
+	 || !STRICT_PARSER_MODE()) {
 		RETURN_TOKEN_WITH_VAL(T_ENCAPSED_AND_WHITESPACE);
 	} else {
 		RETURN_TOKEN(T_ERROR);
@@ -2929,7 +2941,7 @@ double_quotes_scan_done:
 
 					if (spacing == (HEREDOC_USING_SPACES | HEREDOC_USING_TABS)) {
 						zend_throw_exception(zend_ce_parse_error, "Invalid indentation - tabs and spaces cannot be mixed", 0);
-						if (PARSER_MODE()) {
+						if (STRICT_PARSER_MODE()) {
 							RETURN_TOKEN(T_ERROR);
 						}
 					}
@@ -2984,7 +2996,7 @@ heredoc_scan_done:
 	yyleng = YYCURSOR - SCNG(yy_text);
 	ZVAL_STRINGL(zendlval, yytext, yyleng - newline);
 
-	if (!SCNG(heredoc_scan_ahead) && !EG(exception) && PARSER_MODE()) {
+	if (!SCNG(heredoc_scan_ahead) && !EG(exception) && STRICT_PARSER_MODE()) {
 		bool newline_at_start = *(yytext - 1) == '\n' || *(yytext - 1) == '\r';
 		zend_string *copy = Z_STR_P(zendlval);
 
@@ -3053,7 +3065,7 @@ heredoc_scan_done:
 
 					if (spacing == (HEREDOC_USING_SPACES | HEREDOC_USING_TABS)) {
 						zend_throw_exception(zend_ce_parse_error, "Invalid indentation - tabs and spaces cannot be mixed", 0);
-						if (PARSER_MODE()) {
+						if (STRICT_PARSER_MODE()) {
 							RETURN_TOKEN(T_ERROR);
 						}
 					}
@@ -3085,7 +3097,7 @@ nowdoc_scan_done:
 	yyleng = YYCURSOR - SCNG(yy_text);
 	ZVAL_STRINGL(zendlval, yytext, yyleng - newline);
 
-	if (!EG(exception) && spacing != -1 && PARSER_MODE()) {
+	if (!EG(exception) && spacing != -1 && STRICT_PARSER_MODE()) {
 		bool newline_at_start = *(yytext - 1) == '\n' || *(yytext - 1) == '\r';
 		if (!strip_multiline_string_indentation(
 				zendlval, indentation, spacing == HEREDOC_USING_SPACES,
@@ -3122,6 +3134,7 @@ emit_token:
 	if (SCNG(on_event)) {
 		SCNG(on_event)(ON_TOKEN, token, start_line, yytext, yyleng, SCNG(on_event_context));
 	}
+	SCNG(last_token) = token;
 	return token;
 
 emit_token_with_ident:
@@ -3131,6 +3144,7 @@ emit_token_with_ident:
 	if (SCNG(on_event)) {
 		SCNG(on_event)(ON_TOKEN, token, start_line, yytext, yyleng, SCNG(on_event_context));
 	}
+	SCNG(last_token) = token;
 	return token;
 
 return_whitespace:
@@ -3138,10 +3152,11 @@ return_whitespace:
 	if (SCNG(on_event)) {
 		SCNG(on_event)(ON_TOKEN, T_WHITESPACE, start_line, yytext, yyleng, SCNG(on_event_context));
 	}
-	if (PARSER_MODE()) {
+	if (STRICT_PARSER_MODE()) {
 		start_line = CG(zend_lineno);
 		goto restart;
 	} else {
+		SCNG(last_token) = T_WHITESPACE;
 		return T_WHITESPACE;
 	}
 

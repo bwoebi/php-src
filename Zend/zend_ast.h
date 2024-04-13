@@ -67,6 +67,7 @@ enum _zend_ast_kind {
 	ZEND_AST_ATTRIBUTE_GROUP,
 	ZEND_AST_MATCH_ARM_LIST,
 	ZEND_AST_MODIFIER_LIST,
+	ZEND_AST_MACRO_ARG_LIST,
 
 	/* 0 child nodes */
 	ZEND_AST_MAGIC_CONST = 0 << ZEND_AST_NUM_CHILDREN_SHIFT,
@@ -96,6 +97,7 @@ enum _zend_ast_kind {
 	ZEND_AST_POST_DEC,
 	ZEND_AST_YIELD_FROM,
 	ZEND_AST_CLASS_NAME,
+	ZEND_AST_MACRO_ARG,
 
 	ZEND_AST_GLOBAL,
 	ZEND_AST_UNSET,
@@ -149,6 +151,7 @@ enum _zend_ast_kind {
 	ZEND_AST_MATCH,
 	ZEND_AST_MATCH_ARM,
 	ZEND_AST_NAMED_ARG,
+	ZEND_AST_MACRO_VALUE_ARG,
 
 	/* 3 child nodes */
 	ZEND_AST_METHOD_CALL = 3 << ZEND_AST_NUM_CHILDREN_SHIFT,
@@ -276,6 +279,7 @@ static zend_always_inline zend_ast * zend_ast_create_ex_5(zend_ast_kind kind, ze
 ZEND_API zend_ast * ZEND_FASTCALL zend_ast_create_list_0(zend_ast_kind kind);
 ZEND_API zend_ast * ZEND_FASTCALL zend_ast_create_list_1(zend_ast_kind kind, zend_ast *child);
 ZEND_API zend_ast * ZEND_FASTCALL zend_ast_create_list_2(zend_ast_kind kind, zend_ast *child1, zend_ast *child2);
+ZEND_API zend_ast * ZEND_FASTCALL zend_ast_create_list_3(zend_ast_kind kind, zend_ast *child1, zend_ast *child2, zend_ast *child3);
 
 # define zend_ast_create(...) \
 	ZEND_AST_SPEC_CALL(zend_ast_create, __VA_ARGS__)

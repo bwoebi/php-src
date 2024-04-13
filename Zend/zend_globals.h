@@ -355,6 +355,8 @@ struct _zend_php_scanner_globals {
 	bool heredoc_scan_ahead;
 	int heredoc_indentation;
 	bool heredoc_indentation_uses_spaces;
+	bool parsing_macro;
+	uint16_t last_token;
 
 	/* original (unfiltered) script */
 	unsigned char *script_org;

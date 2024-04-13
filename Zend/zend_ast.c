@@ -338,6 +338,43 @@ ZEND_API zend_ast * ZEND_FASTCALL zend_ast_create_list_2(zend_ast_kind kind, zen
 
 	return ast;
 }
+
+ZEND_API zend_ast * ZEND_FASTCALL zend_ast_create_list_3(zend_ast_kind kind, zend_ast *child1, zend_ast *child2, zend_ast *child3) {
+	zend_ast *ast;
+	zend_ast_list *list;
+	uint32_t lineno;
+
+	ast = zend_ast_alloc(zend_ast_list_size(4));
+	list = (zend_ast_list *) ast;
+	list->kind = kind;
+	list->attr = 0;
+	list->children = 3;
+	list->child[0] = child1;
+	list->child[1] = child2;
+	list->child[2] = child3;
+	if (child1) {
+		lineno = zend_ast_get_lineno(child1);
+		if (lineno > CG(zend_lineno)) {
+			lineno = CG(zend_lineno);
+		}
+	} else if (child2) {
+		lineno = zend_ast_get_lineno(child2);
+		if (lineno > CG(zend_lineno)) {
+			lineno = CG(zend_lineno);
+		}
+	} else if (child3) {
+		lineno = zend_ast_get_lineno(child3);
+		if (lineno > CG(zend_lineno)) {
+			lineno = CG(zend_lineno);
+		}
+	} else {
+		list->children = 0;
+		lineno = CG(zend_lineno);
+	}
+	list->lineno = lineno;
+
+	return ast;
+}
 #else
 static zend_ast *zend_ast_create_from_va_list(zend_ast_kind kind, zend_ast_attr attr, va_list va) {
 	uint32_t i, children = kind >> ZEND_AST_NUM_CHILDREN_SHIFT;
@@ -2596,3 +2633,5 @@ zend_ast * ZEND_FASTCALL zend_ast_with_attributes(zend_ast *ast, zend_ast *attr)
 
 	return ast;
 }
+
+

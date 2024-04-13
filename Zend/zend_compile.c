@@ -3899,8 +3899,45 @@ static bool zend_compile_call_common(znode *result, zend_ast *args_ast, zend_fun
 		return true;
 	}
 
-	bool may_have_extra_named_args;
-	uint32_t arg_count = zend_compile_args(args_ast, fbc, &may_have_extra_named_args);
+	bool may_have_extra_named_args = false;
+	uint32_t arg_count = 1;
+	znode *call_result = result, eval_result; 
+	if (args_ast->kind == ZEND_AST_MACRO_ARG_LIST) {
+		call_result = &eval_result;
+		
+		zend_ast_list *list = zend_ast_get_list(args_ast);
+
+		znode arg1;
+		arg1.op_type = IS_CONST;
+		ZVAL_ARR(&arg1.u.constant, zend_new_array(list->children));
+		for (uint32_t i = 0; i < list->children; ++i) {
+			zend_ast *value = list->child[i];
+			zval *lexed_str = zend_ast_get_zval(value->child[0]);
+			if (Z_TYPE_P(lexed_str) == IS_STRING) {
+				zval_make_interned_string(lexed_str);
+			}
+			zval entry, token;
+			ZVAL_LONG(&token, value->attr);
+			ZVAL_ARR(&entry, zend_new_pair(lexed_str, &token));
+			if (value->kind == ZEND_AST_MACRO_VALUE_ARG) {
+				zval *parsed_str = zend_ast_get_zval(value->child[1]);
+				if (Z_TYPE_P(parsed_str) == IS_STRING) {
+					zval_make_interned_string(parsed_str);
+				}
+				zend_hash_next_index_insert_new(Z_ARR(entry), parsed_str);
+			}
+			zend_hash_next_index_insert_new(Z_ARR(arg1.u.constant), &entry);
+		}
+
+		opline = zend_emit_op(NULL, ZEND_SEND_VAL_EX, &arg1, NULL);
+		opline->op2.opline_num = 1;
+		opline->result.var = EX_NUM_TO_VAR(0);
+
+		opline = &CG(active_op_array)->opcodes[opnum_init];
+		opline->extended_value = arg_count;
+	} else {
+		arg_count = zend_compile_args(args_ast, fbc, &may_have_extra_named_args);
+	}
 
 	zend_do_extended_fcall_begin();
 
@@ -3911,12 +3948,22 @@ static bool zend_compile_call_common(znode *result, zend_ast *args_ast, zend_fun
 		opline->op1.num = zend_vm_calc_used_stack(arg_count, fbc);
 	}
 
-	opline = zend_emit_op(result, zend_get_call_op(opline, fbc), NULL, NULL);
+	opline = zend_emit_op(call_result, zend_get_call_op(opline, fbc), NULL, NULL);
 	if (may_have_extra_named_args) {
 		opline->extended_value = ZEND_FCALL_MAY_HAVE_EXTRA_NAMED_PARAMS;
 	}
 	opline->lineno = lineno;
 	zend_do_extended_fcall_end();
+	
+	if (args_ast->kind == ZEND_AST_MACRO_ARG_LIST) {
+		zend_do_extended_fcall_begin();
+
+		opline = zend_emit_op(result, ZEND_INCLUDE_OR_EVAL, call_result, NULL);
+		opline->extended_value = ZEND_EVAL;
+
+		zend_do_extended_fcall_end();
+	}
+	
 	return false;
 }
 /* }}} */
@@ -4773,6 +4820,14 @@ static zend_result zend_try_compile_special_func(znode *result, zend_string *lcn
 	return zend_compile_frameless_icall(result, args, fbc, type) != (uint32_t)-1 ? SUCCESS : FAILURE;
 }
 
+static void zend_compile_check_macro_call(zend_ast *name_ast, zend_ast *args_ast) {
+	if (args_ast->kind == ZEND_AST_MACRO_ARG_LIST) {
+		zval *zv = zend_ast_get_zval(name_ast);
+		Z_STR_P(zv) = zend_string_extend(Z_STR_P(zv), Z_STRLEN_P(zv) + 1, 0);
+		Z_STRVAL_P(zv)[Z_STRLEN_P(zv) - 1] = '!';
+	}
+}
+
 static void zend_compile_call(znode *result, zend_ast *ast, uint32_t type) /* {{{ */
 {
 	zend_ast *name_ast = ast->child[0];
@@ -4786,6 +4841,8 @@ static void zend_compile_call(znode *result, zend_ast *ast, uint32_t type) /* {{
 		zend_compile_dynamic_call(result, &name_node, args_ast, ast->lineno);
 		return;
 	}
+
+	zend_compile_check_macro_call(name_ast, args_ast);
 
 	{
 		bool runtime_resolution = zend_compile_function_name(&name_node, name_ast);
@@ -4865,6 +4922,8 @@ static void zend_compile_method_call(znode *result, zend_ast *ast, uint32_t type
 	zend_function *fbc = NULL;
 	bool nullsafe = ast->kind == ZEND_AST_NULLSAFE_METHOD_CALL;
 	uint32_t short_circuiting_checkpoint = zend_short_circuiting_checkpoint();
+
+	zend_compile_check_macro_call(method_ast, args_ast);
 
 	if (is_this_fetch(obj_ast)) {
 		if (this_guaranteed_exists()) {
@@ -4955,6 +5014,8 @@ static void zend_compile_static_call(znode *result, zend_ast *ast, uint32_t type
 	znode class_node, method_node;
 	zend_op *opline;
 	zend_function *fbc = NULL;
+
+	zend_compile_check_macro_call(method_ast, args_ast);
 
 	zend_short_circuiting_mark_inner(class_ast);
 	zend_compile_class_ref(&class_node, class_ast, ZEND_FETCH_CLASS_EXCEPTION);
