@@ -8112,6 +8112,13 @@ static void zend_compile_func_decl(znode *result, zend_ast *ast, bool toplevel) 
 	/* Pop the loop variable stack separator */
 	zend_stack_del_top(&CG(loop_var_stack));
 
+#if ZEND_MAP_PTR_KIND == ZEND_MAP_PTR_KIND_INLINED
+	/* Store the containing scope, if not static. That way run-time cache can be used with opcache too. */
+	if ((op_array->fn_flags & (ZEND_ACC_CLOSURE|ZEND_ACC_STATIC)) == ZEND_ACC_CLOSURE) {
+		op_array->scope = orig_class_entry;
+	}
+#endif
+
 	if (toplevel) {
 		zend_observer_function_declared_notify(op_array, lcname);
 	}

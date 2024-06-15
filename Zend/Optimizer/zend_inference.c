@@ -2432,7 +2432,7 @@ static const zend_property_info *zend_fetch_prop_info(const zend_op_array *op_ar
 	if (opline->op2_type == IS_CONST) {
 		const zend_class_entry *ce = NULL;
 
-		if (opline->op1_type == IS_UNUSED && !(op_array->fn_flags & ZEND_ACC_TRAIT_CLONE)) {
+		if (opline->op1_type == IS_UNUSED && !(op_array->fn_flags & (ZEND_ACC_TRAIT_CLONE|ZEND_ACC_CLOSURE))) {
 			ce = op_array->scope;
 		} else if (ssa_op->op1_use >= 0) {
 			ce = ssa->var_info[ssa_op->op1_use].ce;
@@ -3756,7 +3756,7 @@ static zend_always_inline zend_result _zend_update_type_info(
 			UPDATE_SSA_TYPE(tmp, ssa_op->result_def);
 			break;
 		case ZEND_FETCH_THIS:
-			if (!(op_array->fn_flags & ZEND_ACC_TRAIT_CLONE)) {
+			if (!(op_array->fn_flags & (ZEND_ACC_TRAIT_CLONE|ZEND_ACC_CLOSURE))) {
 				UPDATE_SSA_OBJ_TYPE(op_array->scope, 1, ssa_op->result_def);
 			}
 			UPDATE_SSA_TYPE(MAY_BE_RCN|MAY_BE_OBJECT, ssa_op->result_def);
