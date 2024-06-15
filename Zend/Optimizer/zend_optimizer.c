@@ -822,6 +822,7 @@ zend_class_entry *zend_optimizer_get_class_entry_from_op1(
 			return zend_optimizer_get_class_entry(script, op_array, Z_STR_P(op1 + 1));
 		}
 	} else if (opline->op1_type == IS_UNUSED && op_array->scope
+			&& !(op_array->fn_flags & ZEND_ACC_CLOSURE)
 			&& !(op_array->scope->ce_flags & ZEND_ACC_TRAIT)
 			&& ((opline->op1.num & ZEND_FETCH_CLASS_MASK) == ZEND_FETCH_CLASS_SELF
 				|| ((opline->op1.num & ZEND_FETCH_CLASS_MASK) == ZEND_FETCH_CLASS_STATIC
@@ -858,8 +859,9 @@ const zend_class_constant *zend_fetch_class_const_info(
 			}
 		}
 	} else if (opline->op1_type == IS_UNUSED
-		&& op_array->scope && !(op_array->scope->ce_flags & ZEND_ACC_TRAIT)
-		&& !(op_array->fn_flags & ZEND_ACC_TRAIT_CLONE)) {
+		&& op_array->scope
+		&& !(op_array->scope->ce_flags & ZEND_ACC_TRAIT)
+		&& !(op_array->fn_flags & (ZEND_ACC_TRAIT_CLONE|ZEND_ACC_CLOSURE))) {
 		int fetch_type = opline->op1.num & ZEND_FETCH_CLASS_MASK;
 		if (fetch_type == ZEND_FETCH_CLASS_SELF) {
 			ce = op_array->scope;
@@ -950,7 +952,7 @@ zend_function *zend_optimizer_get_called_func(
 			if (opline->op1_type == IS_UNUSED
 					&& opline->op2_type == IS_CONST && Z_TYPE_P(CRT_CONSTANT(opline->op2)) == IS_STRING
 					&& op_array->scope
-					&& !(op_array->fn_flags & ZEND_ACC_TRAIT_CLONE)
+					&& !(op_array->fn_flags & (ZEND_ACC_TRAIT_CLONE|ZEND_ACC_CLOSURE))
 					&& !(op_array->scope->ce_flags & ZEND_ACC_TRAIT)) {
 				zend_string *method_name = Z_STR_P(CRT_CONSTANT(opline->op2) + 1);
 				zend_function *fbc = zend_hash_find_ptr(
@@ -1526,8 +1528,7 @@ void zend_foreach_op_array(zend_script *script, zend_op_array_func_t func, void 
 		ZEND_HASH_MAP_FOREACH_PTR(&ce->function_table, op_array) {
 			if (op_array->scope == ce
 					&& op_array->type == ZEND_USER_FUNCTION
-					&& !(op_array->fn_flags & ZEND_ACC_ABSTRACT)
-					&& !(op_array->fn_flags & ZEND_ACC_TRAIT_CLONE)) {
+					&& !(op_array->fn_flags & (ZEND_ACC_ABSTRACT|ZEND_ACC_TRAIT_CLONE|ZEND_ACC_CLOSURE))) {
 				zend_foreach_op_array_helper(op_array, func, context);
 			}
 		} ZEND_HASH_FOREACH_END();

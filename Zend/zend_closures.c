@@ -785,6 +785,8 @@ static void zend_create_closure_ex(zval *res, zend_function *func, zend_class_en
 			closure->func.op_array.fn_flags |= ZEND_ACC_HEAP_RT_CACHE;
 			memset(ptr, 0, func->op_array.cache_size);
 			ZEND_MAP_INLINED_PTR_INIT(closure->func.op_array.run_time_cache, ptr);
+		} else {
+			closure->func.common.fn_flags |= ZEND_ACC_CLOSURE_SCOPED_RT_CACHE;
 		}
 	} else {
 		memcpy(&closure->func, func, sizeof(zend_internal_function));
