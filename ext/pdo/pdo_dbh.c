@@ -1278,8 +1278,8 @@ static void cls_method_dtor(zval *el) /* {{{ */ {
 	if (func->common.function_name) {
 		zend_string_release_ex(func->common.function_name, 0);
 	}
-	if (ZEND_MAP_PTR(func->common.run_time_cache)) {
-		efree(ZEND_MAP_PTR(func->common.run_time_cache));
+	if (ZEND_MAP_INLINED_PTR(func->common.run_time_cache)) {
+		efree(ZEND_MAP_INLINED_PTR_GET(func->common.run_time_cache));
 	}
 	efree(func);
 }
@@ -1290,8 +1290,8 @@ static void cls_method_pdtor(zval *el) /* {{{ */ {
 	if (func->common.function_name) {
 		zend_string_release_ex(func->common.function_name, 1);
 	}
-	if (ZEND_MAP_PTR(func->common.run_time_cache)) {
-		pefree(ZEND_MAP_PTR(func->common.run_time_cache), 1);
+	if (ZEND_MAP_INLINED_PTR(func->common.run_time_cache)) {
+		pefree(ZEND_MAP_INLINED_PTR_GET(func->common.run_time_cache), 1);
 	}
 	pefree(func, 1);
 }
@@ -1327,7 +1327,11 @@ bool pdo_hash_methods(pdo_dbh_object_t *dbh_obj, int kind)
 		func.function_name = zend_string_init(funcs->fname, strlen(funcs->fname), dbh->is_persistent);
 		func.scope = dbh_obj->std.ce;
 		func.prototype = NULL;
-		ZEND_MAP_PTR(func.run_time_cache) = rt_cache_size ? pecalloc(rt_cache_size, 1, dbh->is_persistent) : NULL;
+		if (rt_cache_size) {
+			ZEND_MAP_INLINED_PTR_INIT(func.run_time_cache, pecalloc(rt_cache_size, 1, dbh->is_persistent));
+		} else {
+			ZEND_MAP_INLINED_PTR_INIT_NULL(func.run_time_cache);
+		}
 		func.T = ZEND_OBSERVER_ENABLED;
 		if (funcs->flags) {
 			func.fn_flags = funcs->flags | ZEND_ACC_NEVER_CACHE;

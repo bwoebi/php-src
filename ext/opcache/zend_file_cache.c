@@ -461,7 +461,7 @@ static void zend_file_cache_serialize_op_array(zend_op_array            *op_arra
                                                void                     *buf)
 {
 	ZEND_MAP_PTR_INIT(op_array->static_variables_ptr, NULL);
-	ZEND_MAP_PTR_INIT(op_array->run_time_cache, NULL);
+	ZEND_MAP_INLINED_PTR_INIT_NULL(op_array->run_time_cache);
 
 	/* Check whether this op_array has already been serialized. */
 	if (IS_SERIALIZED(op_array->opcodes)) {
@@ -1311,10 +1311,10 @@ static void zend_file_cache_unserialize_op_array(zend_op_array           *op_arr
 	if (!script->corrupted) {
 		if (op_array != &script->script.main_op_array) {
 			op_array->fn_flags |= ZEND_ACC_IMMUTABLE;
-			ZEND_MAP_PTR_NEW(op_array->run_time_cache);
+			ZEND_MAP_INLINED_PTR_NEW(op_array->run_time_cache, op_array->cache_size);
 		} else {
 			ZEND_ASSERT(!(op_array->fn_flags & ZEND_ACC_IMMUTABLE));
-			ZEND_MAP_PTR_INIT(op_array->run_time_cache, NULL);
+			ZEND_MAP_INLINED_PTR_INIT_NULL(op_array->run_time_cache);
 		}
 		if (op_array->static_variables) {
 			ZEND_MAP_PTR_NEW(op_array->static_variables_ptr);
@@ -1322,7 +1322,8 @@ static void zend_file_cache_unserialize_op_array(zend_op_array           *op_arr
 	} else {
 		op_array->fn_flags &= ~ZEND_ACC_IMMUTABLE;
 		ZEND_MAP_PTR_INIT(op_array->static_variables_ptr, NULL);
-		ZEND_MAP_PTR_INIT(op_array->run_time_cache, NULL);
+		// TODO If script is corrupted???
+		ZEND_MAP_INLINED_PTR_INIT_NULL(op_array->run_time_cache);
 	}
 
 	/* Check whether this op_array has already been unserialized. */

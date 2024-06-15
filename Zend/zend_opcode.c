@@ -90,7 +90,7 @@ void init_op_array(zend_op_array *op_array, uint8_t type, int initial_ops_size)
 	op_array->num_dynamic_func_defs = 0;
 	op_array->dynamic_func_defs = NULL;
 
-	ZEND_MAP_PTR_INIT(op_array->run_time_cache, NULL);
+	ZEND_MAP_INLINED_PTR_INIT_NULL(op_array->run_time_cache);
 	op_array->cache_size = zend_op_array_extension_handles * sizeof(void*);
 
 	memset(op_array->reserved, 0, ZEND_MAX_RESERVED_RESOURCES * sizeof(void*));
@@ -549,8 +549,8 @@ ZEND_API void destroy_op_array(zend_op_array *op_array)
 	uint32_t i;
 
 	if ((op_array->fn_flags & ZEND_ACC_HEAP_RT_CACHE)
-	 && ZEND_MAP_PTR(op_array->run_time_cache)) {
-		efree(ZEND_MAP_PTR(op_array->run_time_cache));
+	 && ZEND_MAP_INLINED_PTR(op_array->run_time_cache)) {
+		efree(ZEND_MAP_INLINED_PTR_GET(op_array->run_time_cache));
 	}
 
 	if (op_array->function_name) {
@@ -1192,6 +1192,12 @@ ZEND_API void pass_two(zend_op_array *op_array)
 	}
 
 	zend_calc_live_ranges(op_array, NULL);
+
+	if (!(op_array->fn_flags & ZEND_ACC_HEAP_RT_CACHE)) {
+		void *run_time_cache = zend_arena_alloc(&CG(arena), op_array->cache_size);
+		memset(run_time_cache, 0, op_array->cache_size);
+		ZEND_MAP_INLINED_PTR_INIT(op_array->run_time_cache, run_time_cache);
+	}
 
 	return;
 }

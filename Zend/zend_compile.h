@@ -379,6 +379,9 @@ typedef struct _zend_oparray_context {
 /* has #[\Override] attribute                             |     |     |     */
 #define ZEND_ACC_OVERRIDE                (1 << 28) /*     |  X  |     |     */
 /*                                                        |     |     |     */
+/* Closure prototype scope is fixed                       |     |     |     */
+#define ZEND_ACC_CLOSURE_SCOPED_RT_CACHE (1 << 29) /*     |  X  |     |     */
+/*                                                        |     |     |     */
 /* op_array uses strict mode types                        |     |     |     */
 #define ZEND_ACC_STRICT_TYPES            (1U << 31) /*    |  X  |     |     */
 
@@ -465,7 +468,7 @@ struct _zend_op_array {
 	uint32_t required_num_args;
 	zend_arg_info *arg_info;
 	HashTable *attributes;
-	ZEND_MAP_PTR_DEF(void **, run_time_cache);
+	ZEND_MAP_INLINED_PTR_DEF(void **, run_time_cache);
 	zend_string *doc_comment;
 	uint32_t T;         /* number of temporary variables */
 	/* END of common elements */
@@ -523,7 +526,7 @@ typedef struct _zend_internal_function {
 	uint32_t required_num_args;
 	zend_internal_arg_info *arg_info;
 	HashTable *attributes;
-	ZEND_MAP_PTR_DEF(void **, run_time_cache);
+	ZEND_MAP_INLINED_PTR_DEF(void **, run_time_cache);
 	zend_string *doc_comment;
 	uint32_t T;         /* number of temporary variables */
 	/* END of common elements */
@@ -551,7 +554,7 @@ union _zend_function {
 		uint32_t required_num_args;
 		zend_arg_info *arg_info;  /* index -1 represents the return value info, if any */
 		HashTable   *attributes;
-		ZEND_MAP_PTR_DEF(void **, run_time_cache);
+		ZEND_MAP_INLINED_PTR_DEF(void **, run_time_cache);
 		zend_string *doc_comment;
 		uint32_t T;         /* number of temporary variables */
 	} common;
@@ -772,8 +775,9 @@ ZEND_STATIC_ASSERT(ZEND_MM_ALIGNED_SIZE(sizeof(zval)) == sizeof(zval),
 		(node).constant = RT_CONSTANT(opline, node) - (op_array)->literals; \
 	} while (0)
 
+/* Runtime cache is never NULL */
 #define RUN_TIME_CACHE(op_array) \
-	ZEND_MAP_PTR_GET((op_array)->run_time_cache)
+	ZEND_MAP_INLINED_PTR_GET((op_array)->run_time_cache)
 
 #define ZEND_OP_ARRAY_EXTENSION(op_array, handle) \
 	((void**)RUN_TIME_CACHE(op_array))[handle]

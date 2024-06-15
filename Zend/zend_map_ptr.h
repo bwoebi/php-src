@@ -30,8 +30,12 @@ typedef struct _zend_string zend_string;
 
 #define ZEND_MAP_PTR(ptr) \
 	ptr ## __ptr
+#define ZEND_MAP_INLINED_PTR(ptr) \
+	ptr ## __iptr
 #define ZEND_MAP_PTR_DEF(type, name) \
 	type ZEND_MAP_PTR(name)
+#define ZEND_MAP_INLINED_PTR_DEF(type, name) \
+	type ZEND_MAP_INLINED_PTR(name)
 #define ZEND_MAP_PTR_OFFSET2PTR(offset) \
 	((void**)((char*)CG(map_ptr_base) + offset))
 #define ZEND_MAP_PTR_PTR2OFFSET(ptr) \
@@ -39,8 +43,18 @@ typedef struct _zend_string zend_string;
 #define ZEND_MAP_PTR_INIT(ptr, val) do { \
 		ZEND_MAP_PTR(ptr) = (val); \
 	} while (0)
+#define ZEND_MAP_INLINED_PTR_INIT(ptr, val) do { \
+		ZEND_ASSERT(val != NULL); \
+		ZEND_MAP_INLINED_PTR(ptr) = ZEND_MAP_PTR_PTR2OFFSET(val); \
+	} while (0)
+#define ZEND_MAP_INLINED_PTR_INIT_NULL(ptr) do { \
+		ZEND_MAP_INLINED_PTR(ptr) = NULL; \
+	} while (0)
 #define ZEND_MAP_PTR_NEW(ptr) do { \
 		ZEND_MAP_PTR(ptr) = zend_map_ptr_new(); \
+	} while (0)
+#define ZEND_MAP_INLINED_PTR_NEW(ptr, size) do { \
+		ZEND_MAP_INLINED_PTR(ptr) = zend_map_inlined_ptr_new(size); \
 	} while (0)
 
 #if ZEND_MAP_PTR_KIND == ZEND_MAP_PTR_KIND_PTR_OR_OFFSET
@@ -52,6 +66,8 @@ typedef struct _zend_string zend_string;
 	((ZEND_MAP_PTR_IS_OFFSET(ptr) ? \
 		ZEND_MAP_PTR_GET_IMM(ptr) : \
 		((void*)(ZEND_MAP_PTR(ptr)))))
+# define ZEND_MAP_INLINED_PTR_GET(ptr) \
+	((void*)ZEND_MAP_PTR_OFFSET2PTR((uintptr_t)ZEND_MAP_INLINED_PTR(ptr)))
 # define ZEND_MAP_PTR_GET_IMM(ptr) \
 	(*ZEND_MAP_PTR_OFFSET2PTR((uintptr_t)ZEND_MAP_PTR(ptr)))
 # define ZEND_MAP_PTR_SET(ptr, val) do { \
@@ -74,7 +90,10 @@ typedef struct _zend_string zend_string;
 BEGIN_EXTERN_C()
 
 ZEND_API void  zend_map_ptr_reset(void);
-ZEND_API void *zend_map_ptr_new(void);
+ZEND_API void *zend_map_inlined_ptr_new(size_t size);
+static inline void *zend_map_ptr_new(void) {
+    return zend_map_inlined_ptr_new(sizeof(void *));
+}
 ZEND_API void  zend_map_ptr_extend(size_t last);
 ZEND_API void zend_alloc_ce_cache(zend_string *type_name);
 

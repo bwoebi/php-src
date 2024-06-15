@@ -2953,10 +2953,11 @@ ZEND_API zend_result zend_register_functions(zend_class_entry *scope, const zend
 		internal_function->prototype = NULL;
 		internal_function->attributes = NULL;
 		internal_function->frameless_function_infos = ptr->frameless_function_infos;
+		size_t cache_size = zend_internal_run_time_cache_reserved_size();
 		if (EG(active)) { // at run-time: this ought to only happen if registered with dl() or somehow temporarily at runtime
-			ZEND_MAP_PTR_INIT(internal_function->run_time_cache, zend_arena_calloc(&CG(arena), 1, zend_internal_run_time_cache_reserved_size()));
-		} else {
-			ZEND_MAP_PTR_NEW(internal_function->run_time_cache);
+			ZEND_MAP_INLINED_PTR_INIT(internal_function->run_time_cache, zend_arena_calloc(&CG(arena), 1, cache_size));
+		} else if (startup_done) {
+			ZEND_MAP_INLINED_PTR_NEW(internal_function->run_time_cache, cache_size);
 		}
 		if (ptr->flags) {
 			if (!(ptr->flags & ZEND_ACC_PPP_MASK)) {

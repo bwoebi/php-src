@@ -46,7 +46,7 @@
 #undef zenderror
 
 static size_t global_map_ptr_last = 0;
-static bool startup_done = false;
+bool startup_done = false;
 
 #ifdef ZTS
 ZEND_API int compiler_globals_id;
@@ -1292,7 +1292,6 @@ ZEND_API void zend_activate(void) /* {{{ */
 	if (CG(map_ptr_last)) {
 		memset(CG(map_ptr_real_base), 0, CG(map_ptr_last) * sizeof(void*));
 	}
-	zend_init_internal_run_time_cache();
 	zend_observer_activate();
 }
 /* }}} */
@@ -1982,19 +1981,21 @@ ZEND_API void zend_map_ptr_reset(void)
 	CG(map_ptr_last) = global_map_ptr_last;
 }
 
-ZEND_API void *zend_map_ptr_new(void)
+ZEND_API void *zend_map_inlined_ptr_new(size_t size)
 {
 	void **ptr;
+	ZEND_ASSERT(ZEND_MM_ALIGNED_SIZE(size) == size);
 
-	if (CG(map_ptr_last) >= CG(map_ptr_size)) {
+	size_t slots = size / sizeof(void *);
+	if (CG(map_ptr_last) + slots > CG(map_ptr_size)) {
 		/* Grow map_ptr table */
-		CG(map_ptr_size) = ZEND_MM_ALIGNED_SIZE_EX(CG(map_ptr_last) + 1, 4096);
+		CG(map_ptr_size) = ZEND_MM_ALIGNED_SIZE_EX(CG(map_ptr_last) + slots, 4096);
 		CG(map_ptr_real_base) = perealloc(CG(map_ptr_real_base), CG(map_ptr_size) * sizeof(void*), 1);
 		CG(map_ptr_base) = ZEND_MAP_PTR_BIASED_BASE(CG(map_ptr_real_base));
 	}
 	ptr = (void**)CG(map_ptr_real_base) + CG(map_ptr_last);
-	*ptr = NULL;
-	CG(map_ptr_last)++;
+	memset(ptr, 0, size);
+	CG(map_ptr_last) += slots;
 	return ZEND_MAP_PTR_PTR2OFFSET(ptr);
 }
 

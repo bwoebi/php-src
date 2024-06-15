@@ -4078,10 +4078,10 @@ static zend_always_inline void init_func_run_time_cache_i(zend_op_array *op_arra
 {
 	void **run_time_cache;
 
-	ZEND_ASSERT(RUN_TIME_CACHE(op_array) == NULL);
+	ZEND_ASSERT(ZEND_MAP_INLINED_PTR(op_array->run_time_cache) == NULL);
 	run_time_cache = zend_arena_alloc(&CG(arena), op_array->cache_size);
 	memset(run_time_cache, 0, op_array->cache_size);
-	ZEND_MAP_PTR_SET(op_array->run_time_cache, run_time_cache);
+	ZEND_MAP_INLINED_PTR_INIT(op_array->run_time_cache, run_time_cache);
 }
 /* }}} */
 
@@ -4093,32 +4093,12 @@ static zend_never_inline void ZEND_FASTCALL init_func_run_time_cache(zend_op_arr
 
 ZEND_API zend_function * ZEND_FASTCALL zend_fetch_function(zend_string *name) /* {{{ */
 {
-	zval *zv = zend_hash_find(EG(function_table), name);
-
-	if (EXPECTED(zv != NULL)) {
-		zend_function *fbc = Z_FUNC_P(zv);
-
-		if (EXPECTED(fbc->type == ZEND_USER_FUNCTION) && UNEXPECTED(!RUN_TIME_CACHE(&fbc->op_array))) {
-			init_func_run_time_cache_i(&fbc->op_array);
-		}
-		return fbc;
-	}
-	return NULL;
+	return zend_hash_find_ptr(EG(function_table), name);
 } /* }}} */
 
 ZEND_API zend_function * ZEND_FASTCALL zend_fetch_function_str(const char *name, size_t len) /* {{{ */
 {
-	zval *zv = zend_hash_str_find(EG(function_table), name, len);
-
-	if (EXPECTED(zv != NULL)) {
-		zend_function *fbc = Z_FUNC_P(zv);
-
-		if (EXPECTED(fbc->type == ZEND_USER_FUNCTION) && UNEXPECTED(!RUN_TIME_CACHE(&fbc->op_array))) {
-			init_func_run_time_cache_i(&fbc->op_array);
-		}
-		return fbc;
-	}
-	return NULL;
+	return zend_hash_str_find_ptr(EG(function_table), name, len);
 } /* }}} */
 
 ZEND_API void ZEND_FASTCALL zend_init_func_run_time_cache(zend_op_array *op_array) /* {{{ */
@@ -4140,12 +4120,12 @@ static zend_always_inline void i_init_code_execute_data(zend_execute_data *execu
 		zend_attach_symbol_table(execute_data);
 	}
 
-	if (!ZEND_MAP_PTR(op_array->run_time_cache)) {
+	if (!ZEND_MAP_INLINED_PTR(op_array->run_time_cache)) {
 		void *ptr;
 
 		ZEND_ASSERT(op_array->fn_flags & ZEND_ACC_HEAP_RT_CACHE);
 		ptr = emalloc(op_array->cache_size);
-		ZEND_MAP_PTR_INIT(op_array->run_time_cache, ptr);
+		ZEND_MAP_INLINED_PTR_INIT(op_array->run_time_cache, ptr);
 		memset(ptr, 0, op_array->cache_size);
 	}
 	EX(run_time_cache) = RUN_TIME_CACHE(op_array);

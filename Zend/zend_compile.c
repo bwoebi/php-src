@@ -1199,7 +1199,11 @@ ZEND_API void function_add_ref(zend_function *function) /* {{{ */
 			(*op_array->refcount)++;
 		}
 
-		ZEND_MAP_PTR_INIT(op_array->run_time_cache, NULL);
+		if (op_array->fn_flags & ZEND_ACC_HEAP_RT_CACHE) {
+			ZEND_MAP_INLINED_PTR_INIT_NULL(op_array->run_time_cache);
+		} else {
+			ZEND_MAP_INLINED_PTR_NEW(op_array->run_time_cache, op_array->cache_size);
+		}
 		ZEND_MAP_PTR_INIT(op_array->static_variables_ptr, NULL);
 	}
 

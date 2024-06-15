@@ -27,30 +27,6 @@ static ZEND_COLD void undef_result_after_exception(void) {
 	}
 }
 
-static zend_never_inline zend_function* ZEND_FASTCALL _zend_jit_init_func_run_time_cache(zend_op_array *op_array) /* {{{ */
-{
-	void **run_time_cache;
-
-	run_time_cache = zend_arena_alloc(&CG(arena), op_array->cache_size);
-	memset(run_time_cache, 0, op_array->cache_size);
-	ZEND_MAP_PTR_SET(op_array->run_time_cache, run_time_cache);
-	return (zend_function*)op_array;
-}
-/* }}} */
-
-static zend_never_inline zend_op_array* ZEND_FASTCALL zend_jit_init_func_run_time_cache_helper(zend_op_array *op_array) /* {{{ */
-{
-	void **run_time_cache;
-
-	if (!RUN_TIME_CACHE(op_array)) {
-		run_time_cache = zend_arena_alloc(&CG(arena), op_array->cache_size);
-		memset(run_time_cache, 0, op_array->cache_size);
-		ZEND_MAP_PTR_SET(op_array->run_time_cache, run_time_cache);
-	}
-	return op_array;
-}
-/* }}} */
-
 static zend_function* ZEND_FASTCALL zend_jit_find_func_helper(zend_string *name, void **cache_slot)
 {
 	zval *func = zend_hash_find_known_hash(EG(function_table), name);
@@ -60,9 +36,6 @@ static zend_function* ZEND_FASTCALL zend_jit_find_func_helper(zend_string *name,
 		return NULL;
 	}
 	fbc = Z_FUNC_P(func);
-	if (EXPECTED(fbc->type == ZEND_USER_FUNCTION) && UNEXPECTED(!RUN_TIME_CACHE(&fbc->op_array))) {
-		fbc = _zend_jit_init_func_run_time_cache(&fbc->op_array);
-	}
 	*cache_slot = fbc;
 	return fbc;
 }
@@ -87,9 +60,6 @@ static zend_function* ZEND_FASTCALL zend_jit_find_ns_func_helper(zval *func_name
 		}
 	}
 	fbc = Z_FUNC_P(func);
-	if (EXPECTED(fbc->type == ZEND_USER_FUNCTION) && UNEXPECTED(!RUN_TIME_CACHE(&fbc->op_array))) {
-		fbc = _zend_jit_init_func_run_time_cache(&fbc->op_array);
-	}
 	*cache_slot = fbc;
 	return fbc;
 }
@@ -154,10 +124,6 @@ static zend_function* ZEND_FASTCALL zend_jit_find_method_helper(zend_object *obj
 			zend_undefined_method(called_scope, Z_STR_P(function_name));
 		}
 		return NULL;
-	}
-
-	if (EXPECTED(fbc->type == ZEND_USER_FUNCTION) && UNEXPECTED(!RUN_TIME_CACHE(&fbc->op_array))) {
-		zend_init_func_run_time_cache(&fbc->op_array);
 	}
 
 	if (UNEXPECTED(obj != *obj_ptr)) {

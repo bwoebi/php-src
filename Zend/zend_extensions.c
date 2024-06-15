@@ -18,6 +18,7 @@
 */
 
 #include "zend_extensions.h"
+#include "zend_observer.h"
 #include "zend_system_id.h"
 
 ZEND_API zend_llist zend_extensions;
@@ -331,24 +332,26 @@ ZEND_API void zend_init_internal_run_time_cache(void) {
 			functions += zend_hash_num_elements(&ce->function_table);
 		} ZEND_HASH_FOREACH_END();
 
-		char *ptr = zend_arena_calloc(&CG(arena), functions, rt_size);
+		char *ptr = zend_map_inlined_ptr_new(functions * rt_size);
 		zend_internal_function *zif;
 		ZEND_HASH_MAP_FOREACH_PTR(CG(function_table), zif) {
-			if (!ZEND_USER_CODE(zif->type) && ZEND_MAP_PTR_GET(zif->run_time_cache) == NULL)
-			{
-				ZEND_MAP_PTR_SET(zif->run_time_cache, (void *)ptr);
-				ptr += rt_size;
-			}
+			ZEND_MAP_INLINED_PTR(zif->run_time_cache) = (void *)ptr;
+			ptr += rt_size;
 		} ZEND_HASH_FOREACH_END();
 		ZEND_HASH_MAP_FOREACH_PTR(CG(class_table), ce) {
 			ZEND_HASH_MAP_FOREACH_PTR(&ce->function_table, zif) {
-				if (!ZEND_USER_CODE(zif->type) && ZEND_MAP_PTR_GET(zif->run_time_cache) == NULL)
-				{
-					ZEND_MAP_PTR_SET(zif->run_time_cache, (void *)ptr);
-					ptr += rt_size;
-				}
+				ZEND_MAP_INLINED_PTR(zif->run_time_cache) = (void *)ptr;
+				ptr += rt_size;
 			} ZEND_HASH_FOREACH_END();
 		} ZEND_HASH_FOREACH_END();
+	}
+}
+
+ZEND_API void zend_fixup_custom_internal_function(zend_internal_function *zif) {
+	zif->T += ZEND_OBSERVER_ENABLED;
+	size_t rt_size = zend_internal_run_time_cache_reserved_size();
+	if (rt_size) {
+		ZEND_MAP_INLINED_PTR_NEW(zif->run_time_cache, rt_size);
 	}
 }
 
