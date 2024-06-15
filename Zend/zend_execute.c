@@ -4074,6 +4074,7 @@ static zend_always_inline void i_init_func_execute_data(zend_op_array *op_array,
 }
 /* }}} */
 
+#if ZEND_MAP_PTR_KIND == ZEND_MAP_PTR_KIND_PURE
 static zend_always_inline void init_func_run_time_cache_i(zend_op_array *op_array) /* {{{ */
 {
 	void **run_time_cache;
@@ -4089,6 +4090,10 @@ static zend_never_inline void ZEND_FASTCALL init_func_run_time_cache(zend_op_arr
 {
 	init_func_run_time_cache_i(op_array);
 }
+#else
+#define init_func_run_time_cache(op_array) do { } while (0)
+#define init_func_run_time_cache_i(op_array) do { } while (0)
+#endif
 /* }}} */
 
 ZEND_API zend_function * ZEND_FASTCALL zend_fetch_function(zend_string *name) /* {{{ */
@@ -4098,9 +4103,11 @@ ZEND_API zend_function * ZEND_FASTCALL zend_fetch_function(zend_string *name) /*
 	if (EXPECTED(zv != NULL)) {
 		zend_function *fbc = Z_FUNC_P(zv);
 
+#if ZEND_MAP_PTR_KIND == ZEND_MAP_PTR_KIND_PURE
 		if (EXPECTED(fbc->type == ZEND_USER_FUNCTION) && UNEXPECTED(!RUN_TIME_CACHE(&fbc->op_array))) {
 			init_func_run_time_cache_i(&fbc->op_array);
 		}
+#endif
 		return fbc;
 	}
 	return NULL;
@@ -4113,9 +4120,11 @@ ZEND_API zend_function * ZEND_FASTCALL zend_fetch_function_str(const char *name,
 	if (EXPECTED(zv != NULL)) {
 		zend_function *fbc = Z_FUNC_P(zv);
 
+#if ZEND_MAP_PTR_KIND == ZEND_MAP_PTR_KIND_PURE
 		if (EXPECTED(fbc->type == ZEND_USER_FUNCTION) && UNEXPECTED(!RUN_TIME_CACHE(&fbc->op_array))) {
 			init_func_run_time_cache_i(&fbc->op_array);
 		}
+#endif
 		return fbc;
 	}
 	return NULL;
@@ -4140,12 +4149,12 @@ static zend_always_inline void i_init_code_execute_data(zend_execute_data *execu
 		zend_attach_symbol_table(execute_data);
 	}
 
-	if (!ZEND_MAP_PTR(op_array->run_time_cache)) {
+	if (!ZEND_MAP_INLINED_PTR(op_array->run_time_cache)) {
 		void *ptr;
 
 		ZEND_ASSERT(op_array->fn_flags & ZEND_ACC_HEAP_RT_CACHE);
 		ptr = emalloc(op_array->cache_size);
-		ZEND_MAP_PTR_INIT(op_array->run_time_cache, ptr);
+		ZEND_MAP_INLINED_PTR_INIT(op_array->run_time_cache, ptr);
 		memset(ptr, 0, op_array->cache_size);
 	}
 	EX(run_time_cache) = RUN_TIME_CACHE(op_array);

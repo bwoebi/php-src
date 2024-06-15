@@ -22,7 +22,7 @@
 #include "php.h"
 #include "php_ini.h"
 #include "ext/standard/info.h"
-#include "zend_observer.h"
+#include "zend_extensions.h"
 #include "php_xmlreader.h"
 #ifdef HAVE_DOM
 #include "ext/dom/xml_common.h"
@@ -1122,11 +1122,9 @@ PHP_METHOD(XMLReader, expand)
 /* }}} */
 
 static zend_result (*prev_zend_post_startup_cb)(void);
-static zend_result xmlreader_fixup_temporaries(void) {
-	if (ZEND_OBSERVER_ENABLED) {
-		++xmlreader_open_fn.T;
-		++xmlreader_xml_fn.T;
-	}
+static zend_result xmlreader_fixup_internal_functions(void) {
+	zend_fixup_custom_internal_function(&xmlreader_open_fn);
+	zend_fixup_custom_internal_function(&xmlreader_xml_fn);
 	if (prev_zend_post_startup_cb) {
 		return prev_zend_post_startup_cb();
 	}
@@ -1156,7 +1154,7 @@ PHP_MINIT_FUNCTION(xmlreader)
 	xmlreader_xml_fn.fn_flags &= ~ZEND_ACC_STATIC;
 
 	prev_zend_post_startup_cb = zend_post_startup_cb;
-	zend_post_startup_cb = xmlreader_fixup_temporaries;
+	zend_post_startup_cb = xmlreader_fixup_internal_functions;
 
 	/* Note: update the size upon adding properties. */
 	zend_hash_init(&xmlreader_prop_handlers, 14, NULL, NULL, true);

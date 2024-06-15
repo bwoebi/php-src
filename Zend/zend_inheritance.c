@@ -2931,7 +2931,13 @@ static zend_class_entry *zend_lazy_class_load(zend_class_entry *pce)
 			memcpy(new_op_array, op_array, sizeof(zend_op_array));
 			new_op_array->fn_flags &= ~ZEND_ACC_IMMUTABLE;
 			new_op_array->scope = ce;
+#if ZEND_MAP_PTR_KIND == ZEND_MAP_PTR_KIND_PURE
 			ZEND_MAP_PTR_INIT(new_op_array->run_time_cache, NULL);
+#else
+			void *run_time_cache = zend_arena_alloc(&CG(arena), new_op_array->cache_size);
+			memset(run_time_cache, 0, new_op_array->cache_size);
+			ZEND_MAP_INLINED_PTR_INIT(new_op_array->run_time_cache, run_time_cache);
+#endif
 			ZEND_MAP_PTR_INIT(new_op_array->static_variables_ptr, NULL);
 
 			zend_update_inherited_handler(constructor);

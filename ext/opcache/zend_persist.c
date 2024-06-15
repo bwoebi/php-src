@@ -687,7 +687,7 @@ static void zend_persist_op_array(zval *zv)
 		zend_persist_op_array_ex(op_array, NULL);
 		if (!ZCG(current_persistent_script)->corrupted) {
 			op_array->fn_flags |= ZEND_ACC_IMMUTABLE;
-			ZEND_MAP_PTR_NEW(op_array->run_time_cache);
+			ZEND_MAP_INLINED_PTR_NEW(op_array->run_time_cache, op_array->cache_size);
 			if (op_array->static_variables) {
 				ZEND_MAP_PTR_NEW(op_array->static_variables_ptr);
 			}
@@ -716,6 +716,9 @@ static void zend_persist_class_method(zval *zv, zend_class_entry *ce)
 				Z_PTR_P(zv) = old_op_array;
 			} else {
 				op_array = Z_PTR_P(zv) = zend_shared_memdup_put(op_array, sizeof(zend_internal_function));
+#if ZEND_MAP_PTR_KIND == ZEND_MAP_PTR_KIND_INLINED
+				op_array->fn_flags &= ~ZEND_ACC_ARENA_ALLOCATED;
+#endif
 				if (op_array->scope) {
 					void *persist_ptr;
 
@@ -731,7 +734,7 @@ static void zend_persist_class_method(zval *zv, zend_class_entry *ce)
 				// Real dynamically created internal functions like enum methods must have their own run_time_cache pointer. They're always on the same scope as their defining class.
 				// However, copies - as caused by inheritance of internal methods - must retain the original run_time_cache pointer, shared with the source function.
 				if (!op_array->scope || (op_array->scope == ce && !(op_array->fn_flags & ZEND_ACC_TRAIT_CLONE))) {
-					ZEND_MAP_PTR_NEW(op_array->run_time_cache);
+					ZEND_MAP_INLINED_PTR_NEW(op_array->run_time_cache, zend_internal_run_time_cache_reserved_size());
 				}
 			}
 		}
@@ -766,13 +769,17 @@ static void zend_persist_class_method(zval *zv, zend_class_entry *ce)
 	if (ce->ce_flags & ZEND_ACC_IMMUTABLE) {
 		op_array->fn_flags |= ZEND_ACC_IMMUTABLE;
 		if (ce->ce_flags & ZEND_ACC_LINKED) {
-			ZEND_MAP_PTR_NEW(op_array->run_time_cache);
 			if (op_array->static_variables) {
 				ZEND_MAP_PTR_NEW(op_array->static_variables_ptr);
 			}
+			ZEND_MAP_INLINED_PTR_NEW(op_array->run_time_cache, op_array->cache_size);
 		} else {
-			ZEND_MAP_PTR_INIT(op_array->run_time_cache, NULL);
 			ZEND_MAP_PTR_INIT(op_array->static_variables_ptr, NULL);
+#if ZEND_MAP_PTR_KIND == ZEND_MAP_PTR_KIND_PURE
+			ZEND_MAP_PTR_INIT(op_array->run_time_cache, NULL);
+#else
+			ZEND_MAP_INLINED_PTR_NEW(op_array->run_time_cache, op_array->cache_size);
+#endif
 		}
 	}
 }
@@ -1363,7 +1370,7 @@ zend_persistent_script *zend_accel_script_persist(zend_persistent_script *script
 	} ZEND_HASH_FOREACH_END();
 	zend_persist_op_array_ex(&script->script.main_op_array, script);
 	if (!script->corrupted) {
-		ZEND_MAP_PTR_INIT(script->script.main_op_array.run_time_cache, NULL);
+		ZEND_MAP_INLINED_PTR_INIT_NULL(script->script.main_op_array.run_time_cache);
 		if (script->script.main_op_array.static_variables) {
 			ZEND_MAP_PTR_NEW(script->script.main_op_array.static_variables_ptr);
 		}

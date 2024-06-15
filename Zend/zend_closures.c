@@ -26,6 +26,7 @@
 #include "zend_objects.h"
 #include "zend_objects_API.h"
 #include "zend_globals.h"
+#include "zend_extensions.h"
 #include "zend_closures_arginfo.h"
 
 typedef struct _zend_closure {
@@ -195,7 +196,7 @@ ZEND_METHOD(Closure, call)
 
 			my_function->op_array.fn_flags |= ZEND_ACC_HEAP_RT_CACHE;
 			ptr = emalloc(my_function->op_array.cache_size);
-			ZEND_MAP_PTR_INIT(my_function->op_array.run_time_cache, ptr);
+			ZEND_MAP_INLINED_PTR_INIT(my_function->op_array.run_time_cache, ptr);
 			memset(ptr, 0, my_function->op_array.cache_size);
 		}
 
@@ -203,7 +204,7 @@ ZEND_METHOD(Closure, call)
 
 		if (ZEND_USER_CODE(my_function->type)) {
 			if (fci_cache.function_handler->common.fn_flags & ZEND_ACC_HEAP_RT_CACHE) {
-				efree(ZEND_MAP_PTR(my_function->op_array.run_time_cache));
+				efree(ZEND_MAP_INLINED_PTR_GET(my_function->op_array.run_time_cache));
 			}
 		}
 		efree_size(fake_closure, sizeof(zend_closure));
@@ -731,7 +732,6 @@ static ZEND_NAMED_FUNCTION(zend_closure_internal_handler) /* {{{ */
 static void zend_create_closure_ex(zval *res, zend_function *func, zend_class_entry *scope, zend_class_entry *called_scope, zval *this_ptr, bool is_fake) /* {{{ */
 {
 	zend_closure *closure;
-	void *ptr;
 
 	object_init_ex(res, zend_ce_closure);
 
@@ -772,7 +772,8 @@ static void zend_create_closure_ex(zval *res, zend_function *func, zend_class_en
 		}
 
 		/* Runtime cache is scope-dependent, so we cannot reuse it if the scope changed */
-		ptr = ZEND_MAP_PTR_GET(func->op_array.run_time_cache);
+#if ZEND_MAP_PTR_KIND == ZEND_MAP_PTR_KIND_PURE
+		void *ptr = ZEND_MAP_PTR_GET(func->op_array.run_time_cache);
 		if (!ptr
 			|| func->common.scope != scope
 			|| (func->common.fn_flags & ZEND_ACC_HEAP_RT_CACHE)
@@ -797,6 +798,22 @@ static void zend_create_closure_ex(zval *res, zend_function *func, zend_class_en
 			memset(ptr, 0, func->op_array.cache_size);
 		}
 		ZEND_MAP_PTR_INIT(closure->func.op_array.run_time_cache, ptr);
+#else
+		if ((func->common.fn_flags & (ZEND_ACC_CLOSURE|ZEND_ACC_IMMUTABLE|ZEND_ACC_FAKE_CLOSURE|ZEND_ACC_CLOSURE_SCOPED_RT_CACHE|ZEND_ACC_HEAP_RT_CACHE)) == ZEND_ACC_CLOSURE) {
+			/* If a real closure is used for the first time, we create a shared runtime cache
+			 * and remember which scope it is for. */
+			func->common.scope = scope;
+			func->common.fn_flags |= ZEND_ACC_CLOSURE_SCOPED_RT_CACHE;
+			closure->func.common.fn_flags |= ZEND_ACC_CLOSURE_SCOPED_RT_CACHE;
+			closure->func.common.fn_flags &= ~ZEND_ACC_HEAP_RT_CACHE;
+		} else if (func->common.scope != scope || (func->common.fn_flags & ZEND_ACC_HEAP_RT_CACHE)) {
+			/* Otherwise, we use a non-shared runtime cache for distinct scopes */
+			void *ptr = emalloc(func->op_array.cache_size);
+			closure->func.op_array.fn_flags |= ZEND_ACC_HEAP_RT_CACHE;
+			memset(ptr, 0, func->op_array.cache_size);
+			ZEND_MAP_INLINED_PTR_INIT(closure->func.op_array.run_time_cache, ptr);
+		}
+#endif
 	} else {
 		memcpy(&closure->func, func, sizeof(zend_internal_function));
 		closure->func.common.fn_flags |= ZEND_ACC_CLOSURE;

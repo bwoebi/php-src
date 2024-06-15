@@ -27,6 +27,7 @@ static ZEND_COLD void undef_result_after_exception(void) {
 	}
 }
 
+#if ZEND_MAP_PTR_KIND == ZEND_MAP_PTR_KIND_PURE
 static zend_never_inline zend_function* ZEND_FASTCALL _zend_jit_init_func_run_time_cache(zend_op_array *op_array) /* {{{ */
 {
 	void **run_time_cache;
@@ -50,6 +51,7 @@ static zend_never_inline zend_op_array* ZEND_FASTCALL zend_jit_init_func_run_tim
 	return op_array;
 }
 /* }}} */
+#endif
 
 static zend_function* ZEND_FASTCALL zend_jit_find_func_helper(zend_string *name, void **cache_slot)
 {
@@ -60,9 +62,11 @@ static zend_function* ZEND_FASTCALL zend_jit_find_func_helper(zend_string *name,
 		return NULL;
 	}
 	fbc = Z_FUNC_P(func);
+#if ZEND_MAP_PTR_KIND == ZEND_MAP_PTR_KIND_PURE
 	if (EXPECTED(fbc->type == ZEND_USER_FUNCTION) && UNEXPECTED(!RUN_TIME_CACHE(&fbc->op_array))) {
 		fbc = _zend_jit_init_func_run_time_cache(&fbc->op_array);
 	}
+#endif
 	*cache_slot = fbc;
 	return fbc;
 }
@@ -87,9 +91,11 @@ static zend_function* ZEND_FASTCALL zend_jit_find_ns_func_helper(zval *func_name
 		}
 	}
 	fbc = Z_FUNC_P(func);
+#if ZEND_MAP_PTR_KIND == ZEND_MAP_PTR_KIND_PURE
 	if (EXPECTED(fbc->type == ZEND_USER_FUNCTION) && UNEXPECTED(!RUN_TIME_CACHE(&fbc->op_array))) {
 		fbc = _zend_jit_init_func_run_time_cache(&fbc->op_array);
 	}
+#endif
 	*cache_slot = fbc;
 	return fbc;
 }
@@ -156,9 +162,11 @@ static zend_function* ZEND_FASTCALL zend_jit_find_method_helper(zend_object *obj
 		return NULL;
 	}
 
+#if ZEND_MAP_PTR_KIND == ZEND_MAP_PTR_KIND_PURE
 	if (EXPECTED(fbc->type == ZEND_USER_FUNCTION) && UNEXPECTED(!RUN_TIME_CACHE(&fbc->op_array))) {
 		zend_init_func_run_time_cache(&fbc->op_array);
 	}
+#endif
 
 	if (UNEXPECTED(obj != *obj_ptr)) {
 		return fbc;

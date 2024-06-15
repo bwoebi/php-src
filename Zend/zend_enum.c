@@ -418,11 +418,8 @@ static void zend_enum_register_func(zend_class_entry *ce, zend_known_string_id n
 	zif->module = EG(current_module);
 	zif->scope = ce;
 	zif->T = ZEND_OBSERVER_ENABLED;
-    if (EG(active)) { // at run-time
-		ZEND_MAP_PTR_INIT(zif->run_time_cache, zend_arena_calloc(&CG(arena), 1, zend_internal_run_time_cache_reserved_size()));
-	} else {
-		ZEND_MAP_PTR_NEW(zif->run_time_cache);
-	}
+	size_t cache_size = zend_internal_run_time_cache_reserved_size();
+	ZEND_MAP_INLINED_PTR_INIT(zif->run_time_cache, zend_arena_calloc(&CG(arena), 1, cache_size));
 
 	if (!zend_hash_add_ptr(&ce->function_table, name, zif)) {
 		zend_error_noreturn(E_COMPILE_ERROR, "Cannot redeclare %s::%s()", ZSTR_VAL(ce->name), ZSTR_VAL(name));

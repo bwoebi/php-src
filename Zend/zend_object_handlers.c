@@ -1345,7 +1345,7 @@ ZEND_API zend_function *zend_get_call_trampoline_func(const zend_class_entry *ce
 		func->fn_flags |= ZEND_ACC_STATIC;
 	}
 	func->opcodes = &EG(call_trampoline_op);
-	ZEND_MAP_PTR_INIT(func->run_time_cache, (void**)dummy);
+	ZEND_MAP_INLINED_PTR_INIT(func->run_time_cache, (void**)dummy);
 	func->scope = fbc->common.scope;
 	/* reserve space for arguments, local and temporary variables */
 	/* EG(trampoline) is reused from other places, like FFI (e.g. zend_ffi_cdata_get_closure()) where

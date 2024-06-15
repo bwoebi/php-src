@@ -337,11 +337,11 @@ void zend_accel_free_delayed_early_binding_list(zend_persistent_script *persiste
 static void zend_accel_do_delayed_early_binding(
 		zend_persistent_script *persistent_script, zend_op_array *op_array)
 {
-	ZEND_ASSERT(!ZEND_MAP_PTR(op_array->run_time_cache));
+	ZEND_ASSERT(!ZEND_MAP_INLINED_PTR(op_array->run_time_cache));
 	ZEND_ASSERT(op_array->fn_flags & ZEND_ACC_HEAP_RT_CACHE);
 	void *run_time_cache = emalloc(op_array->cache_size);
 
-	ZEND_MAP_PTR_INIT(op_array->run_time_cache, run_time_cache);
+	ZEND_MAP_INLINED_PTR_INIT(op_array->run_time_cache, run_time_cache);
 	memset(run_time_cache, 0, op_array->cache_size);
 
 	zend_string *orig_compiled_filename = CG(compiled_filename);

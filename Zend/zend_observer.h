@@ -95,17 +95,17 @@ static zend_always_inline bool zend_observer_handler_is_unobserved(zend_observer
 /* Initial check for observers has not happened yet or no observers are installed. */
 static zend_always_inline bool zend_observer_fcall_has_no_observers(zend_execute_data *execute_data, bool allow_generator, zend_observer_fcall_begin_handler **handler) {
 	zend_function *function = EX(func);
-	void *ZEND_MAP_PTR(runtime_cache) = ZEND_MAP_PTR(function->common.run_time_cache);
+	void *ZEND_MAP_INLINED_PTR(runtime_cache) = ZEND_MAP_INLINED_PTR(function->common.run_time_cache);
 
 	if (function->common.fn_flags & (ZEND_ACC_CALL_VIA_TRAMPOLINE | (allow_generator ? 0 : ZEND_ACC_GENERATOR))) {
 		return true;
 	}
 
-	if (!ZEND_MAP_PTR(runtime_cache)) {
+	if (!ZEND_MAP_INLINED_PTR(runtime_cache)) {
 		return true;
 	}
 
-	*handler = (zend_observer_fcall_begin_handler *)ZEND_MAP_PTR_GET(runtime_cache) + ZEND_OBSERVER_HANDLE(function);
+	*handler = (zend_observer_fcall_begin_handler *)ZEND_MAP_INLINED_PTR_GET(runtime_cache) + ZEND_OBSERVER_HANDLE(function);
 	return zend_observer_handler_is_unobserved(*handler);
 }
 
