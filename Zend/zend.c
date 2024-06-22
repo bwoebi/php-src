@@ -688,6 +688,8 @@ static void auto_global_dtor(zval *zv) /* {{{ */
 }
 /* }}} */
 
+static void zend_map_ptr_reset_global(zend_compiler_globals *compiler_globals);
+static void zend_map_ptr_free_global(zend_compiler_globals *compiler_globals);
 #ifdef ZTS
 static void auto_global_copy_ctor(zval *zv) /* {{{ */
 {
@@ -725,6 +727,7 @@ static void compiler_globals_ctor(zend_compiler_globals *compiler_globals) /* {{
 	compiler_globals->current_linking_class = NULL;
 
 	/* Map region is going to be created and resized at run-time. */
+#if 0
 	compiler_globals->map_ptr_real_base = NULL;
 	compiler_globals->map_ptr_base = ZEND_MAP_PTR_BIASED_BASE(NULL);
 	compiler_globals->map_ptr_size = 0;
@@ -737,6 +740,9 @@ static void compiler_globals_ctor(zend_compiler_globals *compiler_globals) /* {{
 		compiler_globals->map_ptr_base = ZEND_MAP_PTR_BIASED_BASE(base);
 		memset(base, 0, compiler_globals->map_ptr_last * sizeof(void*));
 	}
+#endif
+	zend_map_ptr_init_base(compiler_globals);
+	zend_map_ptr_reset_global(compiler_globals);
 }
 /* }}} */
 
@@ -774,10 +780,7 @@ static void compiler_globals_dtor(zend_compiler_globals *compiler_globals) /* {{
 		pefree((char*)compiler_globals->script_encoding_list, 1);
 	}
 	if (compiler_globals->map_ptr_real_base) {
-		free(compiler_globals->map_ptr_real_base);
-		compiler_globals->map_ptr_real_base = NULL;
-		compiler_globals->map_ptr_base = ZEND_MAP_PTR_BIASED_BASE(NULL);
-		compiler_globals->map_ptr_size = 0;
+		zend_map_ptr_free_global(compiler_globals);
 	}
 }
 /* }}} */
@@ -1021,15 +1024,11 @@ void zend_startup(zend_utility_functions *utility_functions) /* {{{ */
 #else
 	ini_scanner_globals_ctor(&ini_scanner_globals);
 	php_scanner_globals_ctor(&language_scanner_globals);
+	zend_map_ptr_init_base(&compiler_globals);
 	zend_set_default_compile_time_values();
 #ifdef ZEND_WIN32
 	zend_get_windows_version_info(&EG(windows_version_info));
 #endif
-	/* Map region is going to be created and resized at run-time. */
-	CG(map_ptr_real_base) = NULL;
-	CG(map_ptr_base) = ZEND_MAP_PTR_BIASED_BASE(NULL);
-	CG(map_ptr_size) = 0;
-	CG(map_ptr_last) = 0;
 #endif /* ZTS */
 	EG(error_reporting) = E_ALL & ~E_NOTICE;
 
@@ -1104,11 +1103,14 @@ zend_result zend_post_startup(void) /* {{{ */
 	compiler_globals->function_table = NULL;
 	free(compiler_globals->class_table);
 	compiler_globals->class_table = NULL;
+	/*
 	if (compiler_globals->map_ptr_real_base) {
 		free(compiler_globals->map_ptr_real_base);
 	}
 	compiler_globals->map_ptr_real_base = NULL;
 	compiler_globals->map_ptr_base = ZEND_MAP_PTR_BIASED_BASE(NULL);
+	*/
+	zend_map_ptr_reset();
 	if ((script_encoding_list = (zend_encoding **)compiler_globals->script_encoding_list)) {
 		compiler_globals_ctor(compiler_globals);
 		compiler_globals->script_encoding_list = (const zend_encoding **)script_encoding_list;
@@ -1180,10 +1182,7 @@ void zend_shutdown(void) /* {{{ */
 	ts_free_id(compiler_globals_id);
 #else
 	if (CG(map_ptr_real_base)) {
-		free(CG(map_ptr_real_base));
-		CG(map_ptr_real_base) = NULL;
-		CG(map_ptr_base) = ZEND_MAP_PTR_BIASED_BASE(NULL);
-		CG(map_ptr_size) = 0;
+		zend_map_ptr_free_global(&compiler_globals);
 	}
 	if (CG(script_encoding_list)) {
 		free(ZEND_VOIDP(CG(script_encoding_list)));
@@ -1289,9 +1288,10 @@ ZEND_API void zend_activate(void) /* {{{ */
 	init_compiler();
 	init_executor();
 	startup_scanner();
-	if (CG(map_ptr_last)) {
-		memset(CG(map_ptr_real_base), 0, CG(map_ptr_last) * sizeof(void*));
-	}
+	//if (CG(map_ptr_last)) {
+	//	memset(CG(map_ptr_real_base), 0, CG(map_ptr_last) * sizeof(void*));
+	//}
+	
 	zend_observer_activate();
 }
 /* }}} */
@@ -1350,9 +1350,9 @@ ZEND_API void zend_deactivate(void) /* {{{ */
 	 * If we have any, we reset map_ptr to the last permanent string.
 	 * We can't lose any permanent strings because of map_ptr's layout.
 	 */
-	if (zend_hash_num_elements(&CG(interned_strings)) > 0) {
+	//if (zend_hash_num_elements(&CG(interned_strings)) > 0) {
 		zend_map_ptr_reset();
-	}
+	//}
 
 #if GC_BENCH
 	gc_bench_print();
@@ -1976,42 +1976,64 @@ void free_estring(char **str_p) /* {{{ */
 }
 /* }}} */
 
-ZEND_API void zend_map_ptr_reset(void)
+#include <sys/mman.h>
+
+ZEND_API void zend_map_ptr_init_base(zend_compiler_globals *compiler_globals)
 {
-	CG(map_ptr_last) = global_map_ptr_last;
+	compiler_globals->map_ptr_size = 0;
+	compiler_globals->map_ptr_last = 0;
+	compiler_globals->map_ptr_real_base = mmap(NULL, 1 << 30, PROT_NONE /* do not commit */, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+	compiler_globals->map_ptr_base = ZEND_MAP_PTR_BIASED_BASE(compiler_globals->map_ptr_real_base);
+}
+
+static void zend_map_ptr_reset_global(zend_compiler_globals *compiler_globals)
+{
+	/* Create a new mapping at the given location, a more compatible version of madvise(MADV_DONTNEED), resulting in pages being zeroed */
+	mmap(compiler_globals->map_ptr_real_base, MAX(global_map_ptr_last, compiler_globals->map_ptr_last) * sizeof(void*), PROT_READ|PROT_WRITE, MAP_FIXED|MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+	compiler_globals->map_ptr_last = global_map_ptr_last;
+}
+
+static void zend_map_ptr_free_global(zend_compiler_globals *compiler_globals)
+{
+	munmap(compiler_globals->map_ptr_real_base, 1 << 30);
+	compiler_globals->map_ptr_real_base = NULL;
+	compiler_globals->map_ptr_base = ZEND_MAP_PTR_BIASED_BASE(NULL);
+	compiler_globals->map_ptr_size = 0;
+}
+
+ZEND_API void zend_map_ptr_reset(void) {
+	zend_map_ptr_reset_global((zend_compiler_globals *)((char *)&CG(map_ptr_base) - XtOffsetOf(zend_compiler_globals, map_ptr_base)));
+}
+
+static void zend_map_ptr_grow(size_t new_size)
+{
+	/* actually commit the memory - it would not necessary when relying on overcommitting, but we cannot do that. */
+	new_size = ZEND_MM_ALIGNED_SIZE_EX(new_size, 4096);
+	mprotect(CG(map_ptr_real_base) + CG(map_ptr_size) * sizeof(void*), (new_size - CG(map_ptr_size)) * sizeof(void*), PROT_READ|PROT_WRITE);
+	CG(map_ptr_size) = new_size;
 }
 
 ZEND_API void *zend_map_inlined_ptr_new(size_t size)
 {
-	void **ptr;
 	ZEND_ASSERT(ZEND_MM_ALIGNED_SIZE(size) == size);
 
 	size_t slots = size / sizeof(void *);
 	if (CG(map_ptr_last) + slots > CG(map_ptr_size)) {
 		/* Grow map_ptr table */
-		CG(map_ptr_size) = ZEND_MM_ALIGNED_SIZE_EX(CG(map_ptr_last) + slots, 4096);
-		CG(map_ptr_real_base) = perealloc(CG(map_ptr_real_base), CG(map_ptr_size) * sizeof(void*), 1);
-		CG(map_ptr_base) = ZEND_MAP_PTR_BIASED_BASE(CG(map_ptr_real_base));
+		zend_map_ptr_grow(CG(map_ptr_last) + slots);
 	}
-	ptr = (void**)CG(map_ptr_real_base) + CG(map_ptr_last);
-	memset(ptr, 0, size);
+	size_t new = CG(map_ptr_last) * sizeof(void *);
 	CG(map_ptr_last) += slots;
-	return ZEND_MAP_PTR_PTR2OFFSET(ptr);
+	return (void *)(new + 1);
 }
 
 ZEND_API void zend_map_ptr_extend(size_t last)
 {
 	if (last > CG(map_ptr_last)) {
-		void **ptr;
-
 		if (last >= CG(map_ptr_size)) {
 			/* Grow map_ptr table */
-			CG(map_ptr_size) = ZEND_MM_ALIGNED_SIZE_EX(last, 4096);
-			CG(map_ptr_real_base) = perealloc(CG(map_ptr_real_base), CG(map_ptr_size) * sizeof(void*), 1);
-			CG(map_ptr_base) = ZEND_MAP_PTR_BIASED_BASE(CG(map_ptr_real_base));
+			zend_map_ptr_grow(last);
 		}
-		ptr = (void**)CG(map_ptr_real_base) + CG(map_ptr_last);
-		memset(ptr, 0, (last - CG(map_ptr_last)) * sizeof(void*));
 		CG(map_ptr_last) = last;
 	}
 }

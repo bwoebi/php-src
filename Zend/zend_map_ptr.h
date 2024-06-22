@@ -89,6 +89,8 @@ typedef struct _zend_string zend_string;
 
 BEGIN_EXTERN_C()
 
+typedef struct _zend_compiler_globals zend_compiler_globals;
+ZEND_API void zend_map_ptr_init_base(zend_compiler_globals *compiler_globals);
 ZEND_API void  zend_map_ptr_reset(void);
 ZEND_API void *zend_map_inlined_ptr_new(size_t size);
 static inline void *zend_map_ptr_new(void) {
