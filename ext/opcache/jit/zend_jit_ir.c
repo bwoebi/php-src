@@ -208,6 +208,14 @@ static size_t tsrm_tls_offset = 0;
 #define jit_EX(_field) \
 	jit_CALL(jit_FP(jit), _field)
 
+#if ZTS || ZEND_MAP_PTR_KIND == ZEND_MAP_PTR_KIND_PURE
+#define jit_RUN_TIME_CACHE ir_LOAD_A(jit_EX(run_time_cache))
+#define LOAD_MAP_PTR_BASE ir_LOAD_A(jit_CG(map_ptr_base))
+#else
+#define jit_RUN_TIME_CACHE (jit->current_op_array && (jit->current_op_array->fn_flags & (ZEND_ACC_CLOSURE|ZEND_ACC_ARENA_ALLOCATED)) == 0 && !ZEND_MAP_INLINED_PTR_IS_NULL(jit->current_op_array->run_time_cache) ? ir_CONST_ADDR(ZEND_MAP_INLINED_PTR_GET(jit->current_op_array->run_time_cache)) : ir_LOAD_A(jit_EX(run_time_cache)))
+#define LOAD_MAP_PTR_BASE ir_CONST_ADDR(CG(map_ptr_base))
+#endif
+
 #define jit_RX(_field) \
 	jit_CALL(jit_IP(jit), _field)
 
@@ -3833,7 +3841,7 @@ static int zend_jit_jmp_frameless(
 	zend_basic_block *bb;
 
 	// JIT: CACHED_PTR(opline->extended_value)
-	cache_slot_ref = ir_ADD_OFFSET(ir_LOAD_A(jit_EX(run_time_cache)), opline->extended_value);
+	cache_slot_ref = ir_ADD_OFFSET(jit_RUN_TIME_CACHE, opline->extended_value);
 	cache_result = ir_LOAD_L(cache_slot_ref);
 
 	// JIT: if (UNEXPECTED(!result))
@@ -4538,11 +4546,11 @@ static struct jit_observer_fcall_is_unobserved_data jit_observer_fcall_is_unobse
 #if ZEND_MAP_PTR_KIND == ZEND_MAP_PTR_KIND_PURE
 	if (func && (func->common.fn_flags & ZEND_ACC_CLOSURE) == 0 && ZEND_MAP_PTR_IS_OFFSET(func->common.run_time_cache)) {
 		// JIT: ZEND_MAP_PTR_GET_IMM(func->common.runtime_cache)
-		run_time_cache = ir_LOAD_A(ir_ADD_OFFSET(ir_LOAD_A(jit_CG(map_ptr_base)), (uintptr_t)ZEND_MAP_PTR(func->common.run_time_cache)));
+		run_time_cache = ir_LOAD_A(ir_ADD_OFFSET(LOAD_MAP_PTR_BASE, (uintptr_t)ZEND_MAP_PTR(func->common.run_time_cache)));
 #else
 	if (func && (func->common.fn_flags & (ZEND_ACC_CLOSURE|ZEND_ACC_ARENA_ALLOCATED)) == 0 && ZEND_MAP_INLINED_PTR(func->common.run_time_cache)) {
 		// JIT: ZEND_MAP_INLINED_PTR_GET_IMM(func->common.runtime_cache)
-		run_time_cache = ir_ADD_OFFSET(ir_LOAD_A(jit_CG(map_ptr_base)), (uintptr_t)ZEND_MAP_INLINED_PTR(func->common.run_time_cache));
+		run_time_cache = ir_ADD_OFFSET(LOAD_MAP_PTR_BASE, (uintptr_t)ZEND_MAP_INLINED_PTR(func->common.run_time_cache));
 #endif
 	} else {
 		ZEND_ASSERT(rx != IR_UNUSED);
@@ -4556,7 +4564,7 @@ static struct jit_observer_fcall_is_unobserved_data jit_observer_fcall_is_unobse
 			ir_ref if_odd = ir_IF(ir_AND_A(run_time_cache, ir_CONST_ADDR(1)));
 			ir_IF_TRUE(if_odd);
 
-			ir_ref run_time_cache2 = ir_LOAD_A(ir_ADD_A(run_time_cache, ir_LOAD_A(jit_CG(map_ptr_base))));
+			ir_ref run_time_cache2 = ir_LOAD_A(ir_ADD_A(run_time_cache, LOAD_MAP_PTR_BASE));
 
 			ir_ref if_odd_end = ir_END();
 			ir_IF_FALSE(if_odd);
@@ -4575,7 +4583,7 @@ static struct jit_observer_fcall_is_unobserved_data jit_observer_fcall_is_unobse
 			ir_MERGE_WITH(if_odd_end);
 			run_time_cache = ir_PHI_2(IR_ADDR, run_time_cache, run_time_cache2);
 #else
-			run_time_cache = ir_ADD_A(ir_LOAD_A(jit_CG(map_ptr_base)), run_time_cache);
+			run_time_cache = ir_ADD_A(LOAD_MAP_PTR_BASE, run_time_cache);
 #endif
 		}
 	}
@@ -7741,7 +7749,7 @@ static int zend_jit_defined(zend_jit_ctx *jit, const zend_op *opline, uint8_t sm
 	}
 
 	// if (CACHED_PTR(opline->extended_value)) {
-	ref = ir_LOAD_A(ir_ADD_OFFSET(ir_LOAD_A(jit_EX(run_time_cache)), opline->extended_value));
+	ref = ir_LOAD_A(ir_ADD_OFFSET(jit_RUN_TIME_CACHE, opline->extended_value));
 
 	if_set = ir_IF(ref);
 
@@ -7961,7 +7969,7 @@ static int zend_jit_fetch_constant(zend_jit_ctx         *jit,
 	ir_ref ref, ref2, if_set, if_special, not_set_path, special_path, fast_path;
 
 	// JIT: c = CACHED_PTR(opline->extended_value);
-	ref = ir_LOAD_A(ir_ADD_OFFSET(ir_LOAD_A(jit_EX(run_time_cache)), opline->extended_value));
+	ref = ir_LOAD_A(ir_ADD_OFFSET(jit_RUN_TIME_CACHE, opline->extended_value));
 
 	// JIT: if (c != NULL)
 	if_set = ir_IF(ref);
@@ -8688,7 +8696,7 @@ static int zend_jit_init_fcall(zend_jit_ctx *jit, const zend_op *opline, uint32_
 		ir_ref if_func, cache_slot_ref, ref;
 
 		// JIT: if (CACHED_PTR(opline->result.num))
-		cache_slot_ref = ir_ADD_OFFSET(ir_LOAD_A(jit_EX(run_time_cache)), opline->result.num);
+		cache_slot_ref = ir_ADD_OFFSET(jit_RUN_TIME_CACHE, opline->result.num);
 		func_ref = ir_LOAD_A(cache_slot_ref);
 		if (JIT_G(trigger) == ZEND_JIT_ON_HOT_TRACE
 		 && func
@@ -8886,14 +8894,14 @@ static int zend_jit_init_method_call(zend_jit_ctx         *jit,
 
 		if (func) {
 			// JIT: fbc = CACHED_PTR(opline->result.num + sizeof(void*));
-			ref = ir_LOAD_A(ir_ADD_OFFSET(ir_LOAD_A(jit_EX(run_time_cache)), opline->result.num + sizeof(void*)));
+			ref = ir_LOAD_A(ir_ADD_OFFSET(jit_RUN_TIME_CACHE, opline->result.num + sizeof(void*)));
 
 			if_found = ir_IF(ref);
 			ir_IF_TRUE(if_found);
 			fast_path = ir_END();
 		} else {
 			// JIT: if (CACHED_PTR(opline->result.num) == obj->ce)) {
-			run_time_cache = ir_LOAD_A(jit_EX(run_time_cache));
+			run_time_cache = jit_RUN_TIME_CACHE;
 			ref = ir_EQ(
 				ir_LOAD_A(ir_ADD_OFFSET(run_time_cache, opline->result.num)),
 				ir_LOAD_A(ir_ADD_OFFSET(this_ref, offsetof(zend_object, ce))));
@@ -9865,12 +9873,12 @@ static int zend_jit_do_fcall(zend_jit_ctx *jit, const zend_op *opline, const zen
 
 			if (func && op_array == &func->op_array) {
 				/* recursive call */
-				run_time_cache = ir_LOAD_A(jit_EX(run_time_cache));
+				run_time_cache = jit_RUN_TIME_CACHE;
 #if ZEND_MAP_PTR_KIND == ZEND_MAP_PTR_KIND_PURE
 			} else if (func
 			 && !(func->op_array.fn_flags & ZEND_ACC_CLOSURE)
 			 && ZEND_MAP_PTR_IS_OFFSET(func->op_array.run_time_cache)) {
-				run_time_cache = ir_LOAD_A(ir_ADD_OFFSET(ir_LOAD_A(jit_CG(map_ptr_base)),
+				run_time_cache = ir_LOAD_A(ir_ADD_OFFSET(LOAD_MAP_PTR_BASE,
 					(uintptr_t)ZEND_MAP_PTR(func->op_array.run_time_cache)));
 			} else if ((func && (func->op_array.fn_flags & ZEND_ACC_CLOSURE)) ||
 					(JIT_G(current_frame) &&
@@ -9888,18 +9896,18 @@ static int zend_jit_do_fcall(zend_jit_ctx *jit, const zend_op *opline, const zen
 				if_odd = ir_IF(ir_AND_A(run_time_cache, ir_CONST_ADDR(1)));
 				ir_IF_TRUE(if_odd);
 
-				run_time_cache2 = ir_LOAD_A(ir_ADD_A(run_time_cache, ir_LOAD_A(jit_CG(map_ptr_base))));
+				run_time_cache2 = ir_LOAD_A(ir_ADD_A(run_time_cache, LOAD_MAP_PTR_BASE));
 
 				ir_MERGE_WITH_EMPTY_FALSE(if_odd);
 				run_time_cache = ir_PHI_2(IR_ADDR, run_time_cache2, run_time_cache);
 #else
 			} else if (func && (func->op_array.fn_flags & (ZEND_ACC_CLOSURE|ZEND_ACC_ARENA_ALLOCATED)) == 0 && ZEND_MAP_INLINED_PTR(func->op_array.run_time_cache)) {
-				run_time_cache = ir_ADD_OFFSET(ir_LOAD_A(jit_CG(map_ptr_base)),
+				run_time_cache = ir_ADD_OFFSET(LOAD_MAP_PTR_BASE,
 					(uintptr_t)ZEND_MAP_INLINED_PTR(func->op_array.run_time_cache));
 			} else {
 				ir_ref local_func_ref = func_ref ? func_ref : ir_LOAD_A(jit_CALL(rx, func));
 
-				run_time_cache = ir_ADD_A(ir_LOAD_A(jit_CG(map_ptr_base)),
+				run_time_cache = ir_ADD_A(LOAD_MAP_PTR_BASE,
 						ir_LOAD_A(ir_ADD_OFFSET(local_func_ref, offsetof(zend_op_array, ZEND_MAP_INLINED_PTR(run_time_cache)))));
 #endif
 			}
@@ -10658,7 +10666,7 @@ static bool zend_jit_verify_return_type(zend_jit_ctx *jit, const zend_op *opline
 			ref,
 			ir_LOAD_A(jit_EX(func)),
 			ir_CONST_ADDR(arg_info),
-			ir_ADD_OFFSET(ir_LOAD_A(jit_EX(run_time_cache)), opline->op2.num));
+			ir_ADD_OFFSET(jit_RUN_TIME_CACHE, opline->op2.num));
 
 		zend_jit_check_exception(jit);
 
@@ -11123,7 +11131,7 @@ static int zend_jit_bind_global(zend_jit_ctx *jit, const zend_op *opline, uint32
 	ir_ref slow_inputs = IR_UNUSED, end_inputs = IR_UNUSED;
 
 	// JIT: idx = (uintptr_t)CACHED_PTR(opline->extended_value) - 1;
-	cache_slot_ref = ir_ADD_OFFSET(ir_LOAD_A(jit_EX(run_time_cache)), opline->extended_value);
+	cache_slot_ref = ir_ADD_OFFSET(jit_RUN_TIME_CACHE, opline->extended_value);
 	idx_ref = ir_SUB_A(ir_LOAD_A(cache_slot_ref), ir_CONST_ADDR(1));
 
 	// JIT: if (EXPECTED(idx < EG(symbol_table).nNumUsed * sizeof(Bucket)))
@@ -13946,7 +13954,7 @@ static int zend_jit_fetch_obj(zend_jit_ctx         *jit,
 	}
 
 	if (!prop_info) {
-		ir_ref run_time_cache = ir_LOAD_A(jit_EX(run_time_cache));
+		ir_ref run_time_cache = jit_RUN_TIME_CACHE;
 		ir_ref ref = ir_LOAD_A(ir_ADD_OFFSET(run_time_cache, opline->extended_value & ~ZEND_FETCH_OBJ_FLAGS));
 		ir_ref if_same = ir_IF(ir_EQ(ref,
 			ir_LOAD_A(ir_ADD_OFFSET(obj_ref, offsetof(zend_object, ce)))));
@@ -14431,7 +14439,7 @@ static int zend_jit_assign_obj(zend_jit_ctx         *jit,
 	}
 
 	if (!prop_info) {
-		ir_ref run_time_cache = ir_LOAD_A(jit_EX(run_time_cache));
+		ir_ref run_time_cache = jit_RUN_TIME_CACHE;
 		ir_ref ref = ir_LOAD_A(ir_ADD_OFFSET(run_time_cache, opline->extended_value & ~ZEND_FETCH_OBJ_FLAGS));
 		ir_ref if_same = ir_IF(ir_EQ(ref, ir_LOAD_A(ir_ADD_OFFSET(obj_ref, offsetof(zend_object, ce)))));
 
@@ -14620,7 +14628,7 @@ static int zend_jit_assign_obj(zend_jit_ctx         *jit,
 		}
 
 		// JIT: value = zobj->handlers->write_property(zobj, name, value, CACHE_ADDR(opline->extended_value));
-		ir_ref run_time_cache = ir_LOAD_A(jit_EX(run_time_cache));
+		ir_ref run_time_cache = jit_RUN_TIME_CACHE;
 		ir_CALL_5(IR_VOID, ir_CONST_FC_FUNC(zend_jit_assign_obj_helper),
 			obj_ref,
 			ir_CONST_ADDR(name),
@@ -14780,7 +14788,7 @@ static int zend_jit_assign_obj_op(zend_jit_ctx         *jit,
 		&& (op1_info & (MAY_BE_ANY|MAY_BE_UNDEF)) == MAY_BE_OBJECT);
 
 	if (!prop_info) {
-		ir_ref run_time_cache = ir_LOAD_A(jit_EX(run_time_cache));
+		ir_ref run_time_cache = jit_RUN_TIME_CACHE;
 		ir_ref ref = ir_LOAD_A(ir_ADD_OFFSET(run_time_cache, (opline+1)->extended_value & ~ZEND_FETCH_OBJ_FLAGS));
 		ir_ref if_same = ir_IF(ir_EQ(ref, ir_LOAD_A(ir_ADD_OFFSET(obj_ref, offsetof(zend_object, ce)))));
 
@@ -15052,7 +15060,7 @@ long_math:
 			arg3 = jit_ZVAL_ADDR(jit, val_addr);
 		}
 		jit_SET_EX_OPLINE(jit, opline);
-		ir_ref run_time_cache = ir_LOAD_A(jit_EX(run_time_cache));
+		ir_ref run_time_cache = jit_RUN_TIME_CACHE;
 		ir_CALL_5(IR_VOID, ir_CONST_FC_FUNC(zend_jit_assign_obj_op_helper),
 			obj_ref,
 			ir_CONST_ADDR(name),
@@ -15203,7 +15211,7 @@ static int zend_jit_incdec_obj(zend_jit_ctx         *jit,
 		&& (op1_info & (MAY_BE_ANY|MAY_BE_UNDEF)) == MAY_BE_OBJECT);
 
 	if (!prop_info) {
-		ir_ref run_time_cache = ir_LOAD_A(jit_EX(run_time_cache));
+		ir_ref run_time_cache = jit_RUN_TIME_CACHE;
 		ir_ref ref = ir_LOAD_A(ir_ADD_OFFSET(run_time_cache, opline->extended_value & ~ZEND_FETCH_OBJ_FLAGS));
 		ir_ref if_same = ir_IF(ir_EQ(ref, ir_LOAD_A(ir_ADD_OFFSET(obj_ref, offsetof(zend_object, ce)))));
 
@@ -15538,7 +15546,7 @@ static int zend_jit_incdec_obj(zend_jit_ctx         *jit,
 
 		may_throw = 1;
 		jit_SET_EX_OPLINE(jit, opline);
-		ir_ref run_time_cache = ir_LOAD_A(jit_EX(run_time_cache));
+		ir_ref run_time_cache = jit_RUN_TIME_CACHE;
 		ir_CALL_4(IR_VOID, ir_CONST_FC_FUNC(func),
 			obj_ref,
 			ir_CONST_ADDR(name),
