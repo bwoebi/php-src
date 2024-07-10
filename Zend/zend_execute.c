@@ -4153,9 +4153,8 @@ static zend_always_inline void i_init_code_execute_data(zend_execute_data *execu
 		void *ptr;
 
 		ZEND_ASSERT(op_array->fn_flags & ZEND_ACC_HEAP_RT_CACHE);
-		ptr = emalloc(op_array->cache_size);
+		ptr = ecalloc(1, op_array->cache_size);
 		ZEND_MAP_INLINED_PTR_INIT(op_array->run_time_cache, ptr);
-		memset(ptr, 0, op_array->cache_size);
 	}
 	EX(run_time_cache) = RUN_TIME_CACHE(op_array);
 
