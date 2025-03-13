@@ -652,7 +652,7 @@ struct _zend_execute_data {
 #define ZEND_CALL_TOP_CODE           (ZEND_CALL_CODE | ZEND_CALL_TOP)
 
 #define ZEND_CALL_INFO(call) \
-	Z_TYPE_INFO((call)->This)
+	Z_FULL_INFO((call)->This)
 
 #define ZEND_CALL_KIND_EX(call_info) \
 	(call_info & (ZEND_CALL_CODE | ZEND_CALL_TOP))
@@ -669,11 +669,11 @@ struct _zend_execute_data {
 	} while (0)
 
 #define ZEND_ADD_CALL_FLAG(call, flag) do { \
-		ZEND_ADD_CALL_FLAG_EX(Z_TYPE_INFO((call)->This), flag); \
+		ZEND_ADD_CALL_FLAG_EX(Z_FULL_INFO((call)->This), flag); \
 	} while (0)
 
 #define ZEND_DEL_CALL_FLAG(call, flag) do { \
-		ZEND_DEL_CALL_FLAG_EX(Z_TYPE_INFO((call)->This), flag); \
+		ZEND_DEL_CALL_FLAG_EX(Z_FULL_INFO((call)->This), flag); \
 	} while (0)
 
 #define ZEND_CALL_NUM_ARGS(call) \

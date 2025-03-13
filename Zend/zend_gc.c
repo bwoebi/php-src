@@ -200,31 +200,31 @@
 /* The WeakMap entry zv is reachable from roots by following the virtual
  * reference from the a WeakMap key to the entry */
 #define GC_FROM_WEAKMAP_KEY(zv) \
-	(Z_TYPE_INFO_P((zv)) & (Z_FROM_WEAKMAP_KEY << Z_TYPE_INFO_EXTRA_SHIFT))
+	(Z_FULL_INFO_P((zv)) & (Z_FROM_WEAKMAP_KEY << Z_TYPE_INFO_EXTRA_SHIFT))
 
 #define GC_SET_FROM_WEAKMAP_KEY(zv) do {									   \
 	zval *_z = (zv);														   \
-	Z_TYPE_INFO_P(_z) = Z_TYPE_INFO_P(_z) | (Z_FROM_WEAKMAP_KEY << Z_TYPE_INFO_EXTRA_SHIFT); \
+	Z_FULL_INFO_P(_z) = Z_FULL_INFO_P(_z) | (Z_FROM_WEAKMAP_KEY << Z_TYPE_INFO_EXTRA_SHIFT); \
 } while (0)
 
 #define GC_UNSET_FROM_WEAKMAP_KEY(zv) do {									   \
 	zval *_z = (zv);														   \
-	Z_TYPE_INFO_P(_z) = Z_TYPE_INFO_P(_z) & ~(Z_FROM_WEAKMAP_KEY << Z_TYPE_INFO_EXTRA_SHIFT); \
+	Z_FULL_INFO_P(_z) = Z_FULL_INFO_P(_z) & ~(Z_FROM_WEAKMAP_KEY << Z_TYPE_INFO_EXTRA_SHIFT); \
 } while (0)
 
 /* The WeakMap entry zv is reachable from roots by following the reference from
  * the WeakMap */
 #define GC_FROM_WEAKMAP(zv) \
-	(Z_TYPE_INFO_P((zv)) & (Z_FROM_WEAKMAP << Z_TYPE_INFO_EXTRA_SHIFT))
+	(Z_FULL_INFO_P((zv)) & (Z_FROM_WEAKMAP << Z_TYPE_INFO_EXTRA_SHIFT))
 
 #define GC_SET_FROM_WEAKMAP(zv) do {									       \
 	zval *_z = (zv);														   \
-	Z_TYPE_INFO_P(_z) = Z_TYPE_INFO_P(_z) | (Z_FROM_WEAKMAP << Z_TYPE_INFO_EXTRA_SHIFT); \
+	Z_FULL_INFO_P(_z) = Z_FULL_INFO_P(_z) | (Z_FROM_WEAKMAP << Z_TYPE_INFO_EXTRA_SHIFT); \
 } while (0)
 
 #define GC_UNSET_FROM_WEAKMAP(zv) do {										   \
 	zval *_z = (zv);														   \
-	Z_TYPE_INFO_P(_z) = Z_TYPE_INFO_P(_z) & ~(Z_FROM_WEAKMAP << Z_TYPE_INFO_EXTRA_SHIFT); \
+	Z_FULL_INFO_P(_z) = Z_FULL_INFO_P(_z) & ~(Z_FROM_WEAKMAP << Z_TYPE_INFO_EXTRA_SHIFT); \
 } while (0)
 
 /* unused buffers */

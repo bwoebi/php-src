@@ -333,16 +333,22 @@ typedef union _zend_value {
 } zend_value;
 
 struct _zval_struct {
-	zend_value        value;			/* value */
+	zend_value        value;               /* value */
 	union {
-		uint32_t type_info;
+		uint32_t full_info;
 		struct {
-			ZEND_ENDIAN_LOHI_3(
-				uint8_t    type,			/* active type */
-				uint8_t    type_flags,
+			ZEND_ENDIAN_LOHI(
 				union {
-					uint16_t  extra;        /* not further specified */
-				} u)
+					uint16_t type_info;
+					struct {
+						ZEND_ENDIAN_LOHI(
+							uint8_t type,  /* active type */
+							uint8_t type_flags
+						)
+					} v;
+				} u,
+				uint16_t extra             /* not further specified */
+			)
 		} v;
 	} u1;
 	union {
@@ -647,7 +653,7 @@ struct _zend_ast_ref {
 #define ZEND_GUARD_UNPROTECT_RECURSION(pg, t)	*pg &= ~ZEND_GUARD_RECURSION_TYPE(t)
 
 static zend_always_inline uint8_t zval_get_type(const zval* pz) {
-	return pz->u1.v.type;
+	return pz->u1.v.u.v.type;
 }
 
 #define ZEND_SAME_FAKE_TYPE(faketype, realtype) ( \
@@ -659,14 +665,17 @@ static zend_always_inline uint8_t zval_get_type(const zval* pz) {
 #define Z_TYPE(zval)				zval_get_type(&(zval))
 #define Z_TYPE_P(zval_p)			Z_TYPE(*(zval_p))
 
-#define Z_TYPE_FLAGS(zval)			(zval).u1.v.type_flags
+#define Z_TYPE_FLAGS(zval)			(zval).u1.v.u.v.type_flags
 #define Z_TYPE_FLAGS_P(zval_p)		Z_TYPE_FLAGS(*(zval_p))
 
-#define Z_TYPE_EXTRA(zval)			(zval).u1.v.u.extra
+#define Z_TYPE_EXTRA(zval)			(zval).u1.v.extra
 #define Z_TYPE_EXTRA_P(zval_p)		Z_TYPE_EXTRA(*(zval_p))
 
-#define Z_TYPE_INFO(zval)			(zval).u1.type_info
+#define Z_TYPE_INFO(zval)			(zval).u1.v.u.type_info
 #define Z_TYPE_INFO_P(zval_p)		Z_TYPE_INFO(*(zval_p))
+
+#define Z_FULL_INFO(zval)			(zval).u1.full_info
+#define Z_FULL_INFO_P(zval_p)		Z_FULL_INFO(*(zval_p))
 
 #define Z_NEXT(zval)				(zval).u2.next
 #define Z_NEXT_P(zval_p)			Z_NEXT(*(zval_p))
@@ -692,7 +701,7 @@ static zend_always_inline uint8_t zval_get_type(const zval* pz) {
 #define Z_CONSTANT_FLAGS(zval)		(zval).u2.constant_flags
 #define Z_CONSTANT_FLAGS_P(zval_p)	Z_CONSTANT_FLAGS(*(zval_p))
 
-#define Z_EXTRA(zval)				(zval).u2.extra
+#define Z_EXTRA(zval)				(zval).extra
 #define Z_EXTRA_P(zval_p)			Z_EXTRA(*(zval_p))
 
 #define Z_COUNTED(zval)				(zval).value.counted
@@ -1410,7 +1419,7 @@ static zend_always_inline uint32_t zval_delref_p(zval* pz) {
 		zval *_z1 = (z);								\
 		const zval *_z2 = (v);							\
 		zend_refcounted *_gc = Z_COUNTED_P(_z2);		\
-		uint32_t _t = Z_TYPE_INFO_P(_z2);				\
+		uint16_t _t = Z_TYPE_INFO_P(_z2);				\
 		ZVAL_COPY_VALUE_EX(_z1, _z2, _gc, _t);			\
 	} while (0)
 
@@ -1419,7 +1428,7 @@ static zend_always_inline uint32_t zval_delref_p(zval* pz) {
 		zval *_z1 = (z);								\
 		const zval *_z2 = (v);							\
 		zend_refcounted *_gc = Z_COUNTED_P(_z2);		\
-		uint32_t _t = Z_TYPE_INFO_P(_z2);				\
+		uint16_t _t = Z_TYPE_INFO_P(_z2);				\
 		ZVAL_COPY_VALUE_EX(_z1, _z2, _gc, _t);			\
 		if (Z_TYPE_INFO_REFCOUNTED(_t)) {				\
 			GC_ADDREF(_gc);								\
@@ -1431,7 +1440,7 @@ static zend_always_inline uint32_t zval_delref_p(zval* pz) {
 		zval *_z1 = (z);								\
 		const zval *_z2 = (v);							\
 		zend_refcounted *_gc = Z_COUNTED_P(_z2);		\
-		uint32_t _t = Z_TYPE_INFO_P(_z2);				\
+		uint32_t _t = Z_FULL_INFO_P(_z2);				\
 		if ((_t & Z_TYPE_MASK) == IS_ARRAY) {			\
 			ZVAL_ARR(_z1, zend_array_dup((zend_array*)_gc));\
 		} else {										\

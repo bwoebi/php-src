@@ -4207,7 +4207,7 @@ static zend_never_inline void zend_copy_extra_args(EXECUTE_DATA_D)
 	if (EXPECTED(delta != 0)) {
 		delta *= sizeof(zval);
 		do {
-			type_flags |= Z_TYPE_INFO_P(src);
+			type_flags |= Z_FULL_INFO_P(src);
 			ZVAL_COPY_VALUE((zval*)(((char*)src) + delta), src);
 			ZVAL_UNDEF(src);
 			src--;

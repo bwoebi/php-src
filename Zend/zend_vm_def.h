@@ -968,7 +968,7 @@ ZEND_VM_COLD_CONST_HANDLER(14, ZEND_BOOL_NOT, CONST|TMPVAR|CV, ANY)
 		ZVAL_FALSE(EX_VAR(opline->result.var));
 	} else if (EXPECTED(Z_TYPE_INFO_P(val) <= IS_TRUE)) {
 		/* The result and op1 can be the same cv zval */
-		const uint32_t orig_val_type = Z_TYPE_INFO_P(val);
+		const uint16_t orig_val_type = Z_TYPE_INFO_P(val);
 		ZVAL_TRUE(EX_VAR(opline->result.var));
 		if (OP1_TYPE == IS_CV && UNEXPECTED(orig_val_type == IS_UNDEF)) {
 			SAVE_OPLINE();
@@ -7000,7 +7000,7 @@ ZEND_VM_HELPER(zend_fe_fetch_object_helper, ANY, ANY)
 	USE_OPLINE
 	zval *array;
 	zval *value;
-	uint32_t value_type;
+	uint16_t value_type;
 	HashTable *fe_ht;
 	HashPosition pos;
 	Bucket *p;
@@ -7118,7 +7118,7 @@ ZEND_VM_HOT_HANDLER(78, ZEND_FE_FETCH_R, VAR, ANY, JMP_ADDR)
 	USE_OPLINE
 	zval *array;
 	zval *value;
-	uint32_t value_type;
+	uint16_t value_type;
 	HashTable *fe_ht;
 	HashPosition pos;
 
@@ -7198,7 +7198,7 @@ ZEND_VM_HANDLER(126, ZEND_FE_FETCH_RW, VAR, ANY, JMP_ADDR)
 	USE_OPLINE
 	zval *array;
 	zval *value;
-	uint32_t value_type;
+	uint16_t value_type;
 	HashTable *fe_ht;
 	HashPosition pos;
 	Bucket *p;
@@ -10336,7 +10336,7 @@ ZEND_VM_HOT_TYPE_SPEC_HANDLER(ZEND_FE_FETCH_R, op->op2_type == IS_CV && (op1_inf
 	USE_OPLINE
 	zval *array;
 	zval *value, *variable_ptr;
-	uint32_t value_type;
+	uint16_t value_type;
 	HashTable *fe_ht;
 	HashPosition pos;
 
