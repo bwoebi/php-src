@@ -32,8 +32,12 @@ ZEND_API void ZEND_FASTCALL zval_copy_ctor_func(zval *zvalue);
 
 static zend_always_inline void zval_ptr_dtor_nogc(zval *zval_ptr)
 {
-	if (Z_REFCOUNTED_P(zval_ptr) && !Z_DELREF_P(zval_ptr)) {
-		rc_dtor_func(Z_COUNTED_P(zval_ptr));
+	if (Z_REFCOUNTED_P(zval_ptr)) {
+		if (!Z_DELREF_P(zval_ptr)) {
+			rc_dtor_func(Z_COUNTED_P(zval_ptr));
+		} else {
+			Z_TRY_REMOVE_ROOTED(zval_ptr);
+		}
 	}
 }
 
@@ -44,6 +48,7 @@ static zend_always_inline void i_zval_ptr_dtor(zval *zval_ptr)
 		if (!GC_DELREF(ref)) {
 			rc_dtor_func(ref);
 		} else {
+			Z_TRY_REMOVE_ROOTED(zval_ptr);
 			gc_check_possible_root(ref);
 		}
 	}
@@ -62,6 +67,7 @@ static zend_always_inline void zval_opt_copy_ctor(zval *zvalue)
 {
 	if (Z_OPT_TYPE_P(zvalue) == IS_ARRAY) {
 		ZVAL_ARR(zvalue, zend_array_dup(Z_ARR_P(zvalue)));
+		Z_ADD_ROOTED(zvalue);
 	} else if (Z_OPT_REFCOUNTED_P(zvalue)) {
 		Z_ADDREF_P(zvalue);
 	}

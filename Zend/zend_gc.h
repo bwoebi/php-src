@@ -85,6 +85,30 @@ size_t zend_gc_globals_size(void);
 	((GC_TYPE_INFO(ref) & \
 		(GC_INFO_MASK | (GC_NOT_COLLECTABLE << GC_FLAGS_SHIFT))) == 0)
 
+#define Z_TRY_REMOVE_ROOTED(zv) \
+	do {                        \
+		zval *_z = (zv);                             \
+		if (Z_ISROOT_P(_z)) {      \
+			GC_DEL_FLAGS(Z_COUNTED_P(_z), GC_NOT_COLLECTABLE); \
+			Z_UNMARKROOT_P(_z);                             \
+        } \
+	} while (0);
+
+#define Z_TRY_ADD_ROOTED(zv) \
+	do {                        \
+		zval *_z = (zv);                             \
+		if (GC_MAY_LEAK(Z_COUNTED_P(_z))) {      \
+			Z_ADD_ROOTED(_z);                             \
+        } \
+	} while (0);
+
+#define Z_ADD_ROOTED(zv) \
+	do {                        \
+		zval *_z = (zv);                             \
+		GC_ADD_FLAGS(Z_COUNTED_P(_z), GC_NOT_COLLECTABLE); \
+		Z_MARKROOT_P(_z);                             \
+	} while (0);
+
 static zend_always_inline void gc_check_possible_root(zend_refcounted *ref)
 {
 	if (EXPECTED(GC_TYPE_INFO(ref) == GC_REFERENCE)) {
@@ -120,6 +144,7 @@ typedef struct {
 
 ZEND_API zend_get_gc_buffer *zend_get_gc_buffer_create(void);
 ZEND_API void zend_get_gc_buffer_grow(zend_get_gc_buffer *gc_buffer);
+ZEND_API void zend_mark_gc_root_recursive(zval *zv);
 
 static zend_always_inline void zend_get_gc_buffer_add_zval(
 		zend_get_gc_buffer *gc_buffer, zval *zv) {
@@ -127,7 +152,8 @@ static zend_always_inline void zend_get_gc_buffer_add_zval(
 		if (UNEXPECTED(gc_buffer->cur == gc_buffer->end)) {
 			zend_get_gc_buffer_grow(gc_buffer);
 		}
-		ZVAL_COPY_VALUE(gc_buffer->cur, zv);
+		/* include ISROOT */
+		ZVAL_MOVE_VALUE(gc_buffer->cur, zv);
 		gc_buffer->cur++;
 	}
 }

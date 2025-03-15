@@ -1823,6 +1823,7 @@ static zend_always_inline zend_result _object_and_properties_init(zval *arg, zen
 		zend_object *obj = zend_objects_new(class_type);
 
 		ZVAL_OBJ(arg, obj);
+		Z_ADD_ROOTED(arg);
 		if (properties) {
 			object_properties_init_ex(obj, properties);
 		} else {
@@ -1830,6 +1831,7 @@ static zend_always_inline zend_result _object_and_properties_init(zval *arg, zen
 		}
 	} else {
 		ZVAL_OBJ(arg, class_type->create_object(class_type));
+		Z_ADD_ROOTED(arg);
 	}
 	return SUCCESS;
 }
@@ -5113,6 +5115,10 @@ ZEND_API zend_result zend_update_static_property_ex(zend_class_entry *scope, zen
 	}
 
 	zend_assign_to_variable(property, value, IS_TMP_VAR, /* strict */ 0);
+
+	if (Z_OPT_REFCOUNTED_P(value)) {
+		Z_TRY_ADD_ROOTED(value);
+	}
 	return SUCCESS;
 }
 /* }}} */

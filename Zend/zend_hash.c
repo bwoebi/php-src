@@ -1109,7 +1109,8 @@ replace:
 				if (ht->pDestructor) {
 					ht->pDestructor(zv);
 				}
-				ZVAL_COPY_VALUE(zv, pData);
+				ZVAL_MOVE_VALUE(zv, pData);
+				Z_UNMARKROOT_P(pData);
 				return zv;
 			} else { /* we have to keep the order :( */
 				goto convert_to_hash;
@@ -1132,7 +1133,8 @@ add_to_packed:
 			if (flag & HASH_LOOKUP) {
 				ZVAL_NULL(zv);
 			} else {
-				ZVAL_COPY_VALUE(zv, pData);
+				ZVAL_MOVE_VALUE(zv, pData);
+				Z_UNMARKROOT_P(pData);
 			}
 
 			return zv;
@@ -1182,7 +1184,8 @@ convert_to_hash:
 	if (flag & HASH_LOOKUP) {
 		ZVAL_NULL(&p->val);
 	} else {
-		ZVAL_COPY_VALUE(&p->val, pData);
+		ZVAL_MOVE_VALUE(&p->val, pData);
+		Z_UNMARKROOT_P(pData);
 	}
 
 	return &p->val;
@@ -1373,7 +1376,7 @@ ZEND_API void ZEND_FASTCALL zend_hash_rehash(HashTable *ht)
 					while (++i < ht->nNumUsed) {
 						p++;
 						if (EXPECTED(Z_TYPE_INFO(p->val) != IS_UNDEF)) {
-							ZVAL_COPY_VALUE(&q->val, &p->val);
+							ZVAL_MOVE_VALUE(&q->val, &p->val);
 							q->h = p->h;
 							nIndex = q->h | ht->nTableMask;
 							q->key = p->key;
@@ -1392,7 +1395,7 @@ ZEND_API void ZEND_FASTCALL zend_hash_rehash(HashTable *ht)
 					while (++i < ht->nNumUsed) {
 						p++;
 						if (EXPECTED(Z_TYPE_INFO(p->val) != IS_UNDEF)) {
-							ZVAL_COPY_VALUE(&q->val, &p->val);
+							ZVAL_MOVE_VALUE(&q->val, &p->val);
 							q->h = p->h;
 							nIndex = q->h | ht->nTableMask;
 							q->key = p->key;
@@ -1456,7 +1459,7 @@ static zend_always_inline void _zend_hash_packed_del_val(HashTable *ht, uint32_t
 	}
 	if (ht->pDestructor) {
 		zval tmp;
-		ZVAL_COPY_VALUE(&tmp, zv);
+		ZVAL_MOVE_VALUE(&tmp, zv);
 		ZVAL_UNDEF(zv);
 		ht->pDestructor(&tmp);
 	} else {

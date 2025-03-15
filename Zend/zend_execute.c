@@ -3877,6 +3877,7 @@ ZEND_API zval* zend_assign_to_typed_ref_ex(zval *variable_ptr, zval *orig_value,
 	if (EXPECTED(ret)) {
 		if (Z_REFCOUNTED_P(variable_ptr)) {
 			*garbage_ptr = Z_COUNTED_P(variable_ptr);
+			Z_TRY_REMOVE_ROOTED(variable_ptr);
 		}
 		ZVAL_COPY_VALUE(variable_ptr, &value);
 	} else {

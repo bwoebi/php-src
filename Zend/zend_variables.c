@@ -94,6 +94,7 @@ ZEND_API void zval_ptr_safe_dtor(zval *zval_ptr)
 			ZVAL_NULL(zval_ptr);
 			rc_dtor_func(ref);
 		} else {
+			Z_TRY_REMOVE_ROOTED(zval_ptr);
 			gc_check_possible_root(ref);
 		}
 	}
@@ -139,6 +140,7 @@ ZEND_API void ZEND_FASTCALL zval_copy_ctor_func(zval *zvalue)
 {
 	if (EXPECTED(Z_TYPE_P(zvalue) == IS_ARRAY)) {
 		ZVAL_ARR(zvalue, zend_array_dup(Z_ARRVAL_P(zvalue)));
+		Z_MARKROOT_P(zvalue);
 	} else if (EXPECTED(Z_TYPE_P(zvalue) == IS_STRING)) {
 		ZEND_ASSERT(!ZSTR_IS_INTERNED(Z_STR_P(zvalue)));
 		CHECK_ZVAL_STRING(Z_STR_P(zvalue));

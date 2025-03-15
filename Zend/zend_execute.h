@@ -140,7 +140,11 @@ static zend_always_inline void zend_copy_to_variable(zval *variable_ptr, zval *v
 		value = Z_REFVAL_P(value);
 	}
 
-	ZVAL_COPY_VALUE(variable_ptr, value);
+	if (value_type & IS_CONST) {
+		ZVAL_COPY_VALUE(variable_ptr, value);
+	} else {
+		ZVAL_MOVE_VALUE(variable_ptr, value);
+	}
 	if (ZEND_CONST_COND(value_type  == IS_CONST, 0)) {
 		if (UNEXPECTED(Z_OPT_REFCOUNTED_P(variable_ptr))) {
 			Z_ADDREF_P(variable_ptr);
@@ -148,12 +152,16 @@ static zend_always_inline void zend_copy_to_variable(zval *variable_ptr, zval *v
 	} else if (value_type & (IS_CONST|IS_CV)) {
 		if (Z_OPT_REFCOUNTED_P(variable_ptr)) {
 			Z_ADDREF_P(variable_ptr);
+			if (value_type & IS_CV) {
+				Z_UNMARKROOT_P(value);
+			}
 		}
 	} else if (ZEND_CONST_COND(value_type == IS_VAR, 1) && UNEXPECTED(ref)) {
 		if (UNEXPECTED(GC_DELREF(ref) == 0)) {
 			efree_size(ref, sizeof(zend_reference));
 		} else if (Z_OPT_REFCOUNTED_P(variable_ptr)) {
 			Z_ADDREF_P(variable_ptr);
+			Z_UNMARKROOT_P(value);
 		}
 	}
 }
@@ -175,6 +183,7 @@ static zend_always_inline zval* zend_assign_to_variable(zval *variable_ptr, zval
 				}
 			}
 			garbage = Z_COUNTED_P(variable_ptr);
+			Z_TRY_REMOVE_ROOTED(variable_ptr);
 			zend_copy_to_variable(variable_ptr, value, value_type);
 			GC_DTOR_NO_REF(garbage);
 			return variable_ptr;
@@ -200,6 +209,7 @@ static zend_always_inline zval* zend_assign_to_variable_ex(zval *variable_ptr, z
 				}
 			}
 			*garbage_ptr = Z_COUNTED_P(variable_ptr);
+			Z_TRY_REMOVE_ROOTED(variable_ptr);
 		}
 	} while (0);
 

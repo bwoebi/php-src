@@ -2213,6 +2213,26 @@ static void zend_gc_remove_root_tmpvars(void) {
 	}
 }
 
+ZEND_API void zend_mark_gc_root_recursive(zval *zv) {
+	if (Z_REFCOUNTED_P(zv) && GC_MAY_LEAK(Z_COUNTED_P(zv))) {
+		if (Z_TYPE_P(zv) == IS_REFERENCE) {
+			if (Z_REFCOUNTED_P(Z_REFVAL_P(zv)) && GC_MAY_LEAK(Z_COUNTED_P(Z_REFVAL_P(zv)))) {
+				GC_TYPE_INFO(Z_COUNTED_P(zv)) &= ~(GC_NOT_COLLECTABLE << GC_FLAGS_SHIFT);
+				Z_MARKROOT_P(zv);
+				ZVAL_DEREF(zv);
+			} else {
+				return;
+			}
+		}
+		Z_MARKROOT_P(zv);
+		GC_TYPE_INFO(Z_COUNTED_P(zv)) &= ~(GC_NOT_COLLECTABLE << GC_FLAGS_SHIFT);
+		switch (Z_TYPE_P(zv)) {
+			case IS_OBJECT:
+
+		}
+	}
+}
+
 #if GC_BENCH
 void gc_bench_print(void)
 {

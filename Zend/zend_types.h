@@ -707,6 +707,15 @@ static zend_always_inline uint8_t zval_get_type(const zval* pz) {
 #define Z_COUNTED(zval)				(zval).value.counted
 #define Z_COUNTED_P(zval_p)			Z_COUNTED(*(zval_p))
 
+#define Z_VAR_ISROOT (0x8000u)
+
+#define Z_ISROOT(zval) (Z_FULL_INFO(zval) & (Z_VAR_ISROOT << Z_TYPE_INFO_EXTRA_SHIFT))
+#define Z_ISROOT_P(zval_p) Z_ISROOT(*(zval_p))
+#define Z_MARKROOT(zval) (Z_FULL_INFO(zval) |= (Z_VAR_ISROOT << Z_TYPE_INFO_EXTRA_SHIFT))
+#define Z_MARKROOT_P(zval_p) Z_MARKROOT(*(zval_p))
+#define Z_UNMARKROOT(zval) (Z_FULL_INFO(zval) &= ~(Z_VAR_ISROOT << Z_TYPE_INFO_EXTRA_SHIFT))
+#define Z_UNMARKROOT_P(zval_p) Z_UNMARKROOT(*(zval_p))
+
 #define Z_TYPE_MASK					0xff
 #define Z_TYPE_FLAGS_MASK			0xff00
 
@@ -732,6 +741,21 @@ static zend_always_inline uint8_t zval_get_type(const zval* pz) {
 		} \
 	} while (0)
 
+#define GC_DTOR_CHECK_ROOT(p) \
+	do { \
+		zend_refcounted_h *_p = &(p)->gc; \
+		if (zend_gc_delref(_p) == 0) { \
+			rc_dtor_func((zend_refcounted *)_p); \
+		} else {                    \
+			if (UNEXPECTED(Z_ISROOT_P(zvp))) {                             \
+				gc_possible_root((zend_refcounted *)_p);       \
+				Z_UNMARKROOT_P(zvp); \
+			} else {                      \
+				gc_check_possible_root((zend_refcounted *)_p);              \
+			} \
+		} \
+	} while (0)
+
 #define GC_DTOR_NO_REF(p) \
 	do { \
 		zend_refcounted_h *_p = &(p)->gc; \
@@ -742,11 +766,26 @@ static zend_always_inline uint8_t zval_get_type(const zval* pz) {
 		} \
 	} while (0)
 
+#define GC_DTOR_NO_REF_CHECK_ROOT(p, zvp) \
+	do { \
+		zend_refcounted_h *_p = &(p)->gc; \
+		if (zend_gc_delref(_p) == 0) { \
+			rc_dtor_func((zend_refcounted *)_p); \
+		} else { \
+			if (UNEXPECTED(Z_ISROOT_P(zvp))) {                             \
+				gc_possible_root((zend_refcounted *)_p);                      \
+				Z_UNMARKROOT_P(zvp); \
+			} else {                      \
+				gc_check_possible_root((zend_refcounted *)_p); \
+			}\
+		} \
+	} while (0)
+
 #define GC_TYPE_MASK				0x0000000f
-#define GC_FLAGS_MASK				0x000003f0
-#define GC_INFO_MASK				0xfffffc00
+#define GC_FLAGS_MASK				0x000007f0
+#define GC_INFO_MASK				0xfffff800
 #define GC_FLAGS_SHIFT				0
-#define GC_INFO_SHIFT				10
+#define GC_INFO_SHIFT				11
 
 static zend_always_inline uint8_t zval_gc_type(uint32_t gc_type_info) {
 	return (gc_type_info & GC_TYPE_MASK);
@@ -1209,7 +1248,7 @@ static zend_always_inline uint32_t zval_gc_info(uint32_t gc_type_info) {
 		(zend_reference *) emalloc(sizeof(zend_reference));		\
 		GC_SET_REFCOUNT(_ref, 1);								\
 		GC_TYPE_INFO(_ref) = GC_REFERENCE;						\
-		ZVAL_COPY_VALUE(&_ref->val, r);							\
+		ZVAL_MOVE_VALUE(&_ref->val, r);							\
 		_ref->sources.ptr = NULL;									\
 		Z_REF_P(z) = _ref;										\
 		Z_TYPE_INFO_P(z) = IS_REFERENCE_EX;						\
@@ -1221,7 +1260,7 @@ static zend_always_inline uint32_t zval_gc_info(uint32_t gc_type_info) {
 			(zend_reference *) emalloc(sizeof(zend_reference));	\
 		GC_SET_REFCOUNT(_ref, (refcount));						\
 		GC_TYPE_INFO(_ref) = GC_REFERENCE;						\
-		ZVAL_COPY_VALUE(&_ref->val, _z);						\
+		ZVAL_MOVE_VALUE(&_ref->val, _z);						\
 		_ref->sources.ptr = NULL;									\
 		Z_REF_P(_z) = _ref;										\
 		Z_TYPE_INFO_P(_z) = IS_REFERENCE_EX;					\
@@ -1233,7 +1272,7 @@ static zend_always_inline uint32_t zval_gc_info(uint32_t gc_type_info) {
 		GC_SET_REFCOUNT(_ref, 1);								\
 		GC_TYPE_INFO(_ref) = GC_REFERENCE |						\
 			(GC_PERSISTENT << GC_FLAGS_SHIFT);					\
-		ZVAL_COPY_VALUE(&_ref->val, r);							\
+		ZVAL_MOVE_VALUE(&_ref->val, r);							\
 		_ref->sources.ptr = NULL;									\
 		Z_REF_P(z) = _ref;										\
 		Z_TYPE_INFO_P(z) = IS_REFERENCE_EX;						\
@@ -1404,11 +1443,23 @@ static zend_always_inline uint32_t zval_delref_p(zval* pz) {
 		z->value.ww.w2 = _w2;							\
 		Z_TYPE_INFO_P(z) = t;							\
 	} while (0)
+# define ZVAL_MOVE_VALUE_EX(z, v, gc, t)				\
+	do {												\
+		uint32_t _w2 = v->value.ww.w2;					\
+		Z_COUNTED_P(z) = gc;							\
+		z->value.ww.w2 = _w2;							\
+		Z_FULL_INFO_P(z) = t;							\
+	} while (0)
 #elif SIZEOF_SIZE_T == 8
 # define ZVAL_COPY_VALUE_EX(z, v, gc, t)				\
 	do {												\
 		Z_COUNTED_P(z) = gc;							\
 		Z_TYPE_INFO_P(z) = t;							\
+	} while (0)
+# define ZVAL_MOVE_VALUE_EX(z, v, gc, t)				\
+	do {												\
+		Z_COUNTED_P(z) = gc;							\
+		Z_FULL_INFO_P(z) = t;							\
 	} while (0)
 #else
 # error "Unknown SIZEOF_SIZE_T"
@@ -1421,6 +1472,15 @@ static zend_always_inline uint32_t zval_delref_p(zval* pz) {
 		zend_refcounted *_gc = Z_COUNTED_P(_z2);		\
 		uint16_t _t = Z_TYPE_INFO_P(_z2);				\
 		ZVAL_COPY_VALUE_EX(_z1, _z2, _gc, _t);			\
+	} while (0)
+
+#define ZVAL_MOVE_VALUE(z, v)							\
+	do {												\
+		zval *_z1 = (z);								\
+		const zval *_z2 = (v);							\
+		zend_refcounted *_gc = Z_COUNTED_P(_z2);		\
+		uint32_t _t = Z_FULL_INFO_P(_z2);				\
+		ZVAL_MOVE_VALUE_EX(_z1, _z2, _gc, _t);			\
 	} while (0)
 
 #define ZVAL_COPY(z, v)									\
@@ -1442,7 +1502,8 @@ static zend_always_inline uint32_t zval_delref_p(zval* pz) {
 		zend_refcounted *_gc = Z_COUNTED_P(_z2);		\
 		uint32_t _t = Z_FULL_INFO_P(_z2);				\
 		if ((_t & Z_TYPE_MASK) == IS_ARRAY) {			\
-			ZVAL_ARR(_z1, zend_array_dup((zend_array*)_gc));\
+			ZVAL_ARR(_z1, zend_array_dup((zend_array*)_gc)); \
+			Z_MARKROOT_P(_z1);							\
 		} else {										\
 			if (Z_TYPE_INFO_REFCOUNTED(_t)) {			\
 				GC_ADDREF(_gc);							\
@@ -1503,7 +1564,7 @@ static zend_always_inline uint32_t zval_delref_p(zval* pz) {
 		zend_reference *ref;							\
 		ZEND_ASSERT(Z_ISREF_P(_z));						\
 		ref = Z_REF_P(_z);								\
-		ZVAL_COPY_VALUE(_z, &ref->val);					\
+		ZVAL_MOVE_VALUE(_z, &ref->val);					\
 		efree_size(ref, sizeof(zend_reference));		\
 	} while (0)
 
