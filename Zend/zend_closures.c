@@ -77,6 +77,10 @@ static bool zend_valid_closure_binding(
 		zend_closure *closure, zval *newthis, zend_class_entry *scope) /* {{{ */
 {
 	zend_function *func = &closure->func;
+	if (func->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
+		zend_throw_error(NULL, "Cannot rebind scope of a scope function");
+		return false;
+	}
 	bool is_fake_closure = (func->common.fn_flags & ZEND_ACC_FAKE_CLOSURE) != 0;
 	if (newthis) {
 		if (func->common.fn_flags & ZEND_ACC_STATIC) {
@@ -537,6 +541,13 @@ ZEND_API zval* zend_get_closure_this_ptr(zval *obj) /* {{{ */
 }
 /* }}} */
 
+ZEND_API zval* zend_closure_get_this_ptr_ptr(zend_object *obj) /* {{{ */
+{
+	zend_closure *closure = (zend_closure *)obj;
+	return &closure->this_ptr;
+}
+/* }}} */
+
 static zend_function *zend_closure_get_method(zend_object **object, zend_string *method, const zval *key) /* {{{ */
 {
 	if (zend_string_equals_literal_ci(method, ZEND_INVOKE_FUNC_NAME)) {
@@ -563,7 +574,7 @@ static void zend_closure_free_storage(zend_object *object) /* {{{ */
 		zend_string_release(closure->func.common.function_name);
 	}
 
-	if (Z_TYPE(closure->this_ptr) != IS_UNDEF) {
+	if (Z_TYPE(closure->this_ptr) != IS_UNDEF && Z_TYPE(closure->this_ptr) != IS_PTR) {
 		zval_ptr_dtor(&closure->this_ptr);
 	}
 }
@@ -585,6 +596,12 @@ static zend_object *zend_closure_new(zend_class_entry *class_type) /* {{{ */
 static zend_object *zend_closure_clone(zend_object *zobject) /* {{{ */
 {
 	zend_closure *closure = (zend_closure *)zobject;
+
+	if (closure->func.common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
+		zend_throw_error(NULL, "Cannot clone a scope function closure");
+		return zobject;
+	}
+
 	zval result;
 
 	zend_create_closure(&result, &closure->func,
@@ -600,7 +617,7 @@ static zend_result zend_closure_get_closure(zend_object *obj, zend_class_entry *
 	*fptr_ptr = &closure->func;
 	*ce_ptr = closure->called_scope;
 
-	if (Z_TYPE(closure->this_ptr) != IS_UNDEF) {
+	if (Z_TYPE(closure->this_ptr) == IS_OBJECT) {
 		*obj_ptr = Z_OBJ(closure->this_ptr);
 	} else {
 		*obj_ptr = NULL;
@@ -672,7 +689,7 @@ static HashTable *zend_closure_get_debug_info(zend_object *object, int *is_temp)
 		}
 	}
 
-	if (Z_TYPE(closure->this_ptr) != IS_UNDEF) {
+	if (Z_TYPE(closure->this_ptr) == IS_OBJECT) {
 		Z_ADDREF(closure->this_ptr);
 		zend_hash_update(debug_info, ZSTR_KNOWN(ZEND_STR_THIS), &closure->this_ptr);
 	}

@@ -44,6 +44,7 @@ enum _zend_ast_kind {
 	ZEND_AST_METHOD,
 	ZEND_AST_CLASS,
 	ZEND_AST_ARROW_FUNC,
+	ZEND_AST_SCOPE_FUNC,
 	ZEND_AST_PROPERTY_HOOK,
 
 	/* list nodes */

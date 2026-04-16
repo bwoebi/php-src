@@ -2992,9 +2992,51 @@ ZEND_VM_HOT_HELPER(zend_leave_helper, ANY, ANY)
 	SAVE_OPLINE();
 #endif
 
+	/* Scope function: don't free CVs, don't pop VM stack */
+	if (UNEXPECTED(EX(func) && EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)) {
+		zend_object *closure_obj = ZEND_CLOSURE_OBJECT(EX(func));
+		zval *this_ptr = zend_closure_get_this_ptr_ptr(closure_obj);
+
+		/* Clear recursion flag */
+		Z_EXTRA_P(this_ptr) = 0;
+
+		EG(current_execute_data) = EX(prev_execute_data);
+
+		/* Release the ZEND_CALL_CLOSURE ref (transferred from INIT_DYNAMIC_CALL) */
+		OBJ_RELEASE(closure_obj);
+
+		/* Do NOT free CVs — parent owns them */
+		/* Do NOT pop VM stack — scope_ed is in parent's frame */
+		execute_data = EX(prev_execute_data);
+
+		if (UNEXPECTED(EG(exception) != NULL)) {
+			zend_rethrow_exception(execute_data);
+			HANDLE_EXCEPTION_LEAVE();
+		}
+
+		LOAD_NEXT_OPLINE();
+		ZEND_VM_LEAVE();
+	}
+
 	if (EXPECTED((call_info & (ZEND_CALL_CODE|ZEND_CALL_TOP|ZEND_CALL_HAS_SYMBOL_TABLE|ZEND_CALL_FREE_EXTRA_ARGS|ZEND_CALL_ALLOCATED|ZEND_CALL_HAS_EXTRA_NAMED_PARAMS)) == 0)) {
 		EG(current_execute_data) = EX(prev_execute_data);
 		i_free_compiled_variables(execute_data);
+
+		/* Invalidate scope function tracking TMPs */
+		if (UNEXPECTED(ZEND_USER_CODE(EX(func)->type) && EX(func)->op_array.last_live_range)) {
+			for (uint32_t i = 0; i < EX(func)->op_array.last_live_range; i++) {
+				uint32_t kind = EX(func)->op_array.live_range[i].var & ZEND_LIVE_MASK;
+				if (kind == ZEND_LIVE_SCOPE_FUNC) {
+					uint32_t var_num = EX(func)->op_array.live_range[i].var & ~ZEND_LIVE_MASK;
+					zval *var = EX_VAR(var_num);
+					if (Z_TYPE_P(var) == IS_OBJECT) {
+						zval *tp = zend_closure_get_this_ptr_ptr(Z_OBJ_P(var));
+						Z_PTR_P(tp) = NULL;
+						OBJ_RELEASE(Z_OBJ_P(var));
+					}
+				}
+			}
+		}
 
 #ifdef ZEND_PREFER_RELOAD
 		call_info = EX_CALL_INFO();
@@ -3017,6 +3059,22 @@ ZEND_VM_HOT_HELPER(zend_leave_helper, ANY, ANY)
 	} else if (EXPECTED((call_info & (ZEND_CALL_CODE|ZEND_CALL_TOP)) == 0)) {
 		EG(current_execute_data) = EX(prev_execute_data);
 		i_free_compiled_variables(execute_data);
+
+		/* Invalidate scope function tracking TMPs */
+		if (UNEXPECTED(ZEND_USER_CODE(EX(func)->type) && EX(func)->op_array.last_live_range)) {
+			for (uint32_t i = 0; i < EX(func)->op_array.last_live_range; i++) {
+				uint32_t kind = EX(func)->op_array.live_range[i].var & ZEND_LIVE_MASK;
+				if (kind == ZEND_LIVE_SCOPE_FUNC) {
+					uint32_t var_num = EX(func)->op_array.live_range[i].var & ~ZEND_LIVE_MASK;
+					zval *var = EX_VAR(var_num);
+					if (Z_TYPE_P(var) == IS_OBJECT) {
+						zval *tp = zend_closure_get_this_ptr_ptr(Z_OBJ_P(var));
+						Z_PTR_P(tp) = NULL;
+						OBJ_RELEASE(Z_OBJ_P(var));
+					}
+				}
+			}
+		}
 
 #ifdef ZEND_PREFER_RELOAD
 		call_info = EX_CALL_INFO();
@@ -10637,5 +10695,121 @@ ZEND_VM_HELPER(zend_interrupt_helper, ANY, ANY)
 		}
 		ZEND_VM_ENTER();
 	}
+	ZEND_VM_CONTINUE();
+}
+
+ZEND_VM_HANDLER(212, ZEND_DECLARE_SCOPE_FUNC, TMP, NUM)
+{
+	USE_OPLINE
+	zend_function *func;
+	zval *object;
+	zend_class_entry *called_scope;
+	zval *tracking_var = EX_VAR(opline->op1.var);
+
+	/* Invalidate previous scope func closure if re-evaluating (e.g. in a loop) */
+	if (Z_TYPE_P(tracking_var) == IS_OBJECT) {
+		zval *old_this_ptr = zend_closure_get_this_ptr_ptr(Z_OBJ_P(tracking_var));
+		Z_PTR_P(old_this_ptr) = NULL;
+		OBJ_RELEASE(Z_OBJ_P(tracking_var));
+		ZVAL_UNDEF(tracking_var);
+	}
+
+	func = (zend_function *) EX(func)->op_array.dynamic_func_defs[opline->op2.num];
+	if (Z_TYPE(EX(This)) == IS_OBJECT) {
+		called_scope = Z_OBJCE(EX(This));
+		object = &EX(This);
+	} else {
+		called_scope = Z_CE(EX(This));
+		object = NULL;
+	}
+	SAVE_OPLINE();
+	zend_create_closure(EX_VAR(opline->result.var), func,
+		EX(func)->op_array.scope, called_scope, object);
+
+	/* Store parent_execute_data and recursion flag in closure's this_ptr */
+	{
+		zval *this_ptr = zend_closure_get_this_ptr_ptr(Z_OBJ_P(EX_VAR(opline->result.var)));
+		Z_PTR_P(this_ptr) = execute_data;
+		Z_EXTRA_P(this_ptr) = 0;
+		Z_TYPE_INFO_P(this_ptr) = IS_PTR;
+	}
+
+	/* Store ADDREF'd copy in tracking TMP for lifecycle management */
+	ZVAL_OBJ(tracking_var, Z_OBJ_P(EX_VAR(opline->result.var)));
+	Z_ADDREF_P(tracking_var);
+
+	ZEND_VM_NEXT_OPCODE();
+}
+
+ZEND_VM_HANDLER(213, ZEND_ENTER_SCOPE_FUNC, ANY, ANY)
+{
+	USE_OPLINE
+	zend_object *closure_obj = ZEND_CLOSURE_OBJECT(EX(func));
+	zval *this_ptr = zend_closure_get_this_ptr_ptr(closure_obj);
+	zend_execute_data *parent_ed;
+	zend_execute_data *scope_ed;
+	uint32_t num_params = opline->op1.num;
+	uint32_t scope_ed_offset = opline->extended_value;
+
+	SAVE_OPLINE();
+
+	/* Lifetime check */
+	parent_ed = (zend_execute_data *)Z_PTR_P(this_ptr);
+	if (UNEXPECTED(!parent_ed)) {
+		zend_throw_error(NULL, "Cannot call scope function: defining scope has exited");
+		HANDLE_EXCEPTION();
+	}
+
+	/* Recursion check */
+	if (UNEXPECTED(Z_EXTRA_P(this_ptr) != 0)) {
+		zend_throw_error(NULL, "Cannot recursively call scope function");
+		HANDLE_EXCEPTION();
+	}
+
+	/* Compute scope_ed from parent_ed + stored offset */
+	scope_ed = (zend_execute_data *)((char *)parent_ed + scope_ed_offset);
+
+	/* Copy args from call frame (positive offsets) to parent CVs */
+	if (num_params > 0) {
+		uint32_t first_literal = opline->op2.num;
+		uint32_t num_args = EX_NUM_ARGS();
+		uint32_t copy_count = MIN(num_args, num_params);
+		zval *literals = EX(func)->op_array.literals;
+		for (uint32_t i = 0; i < copy_count; i++) {
+			zval *src = ZEND_CALL_ARG(execute_data, i + 1);
+			/* Get parent CV offset from literal array */
+			uint32_t parent_cv_offset = (uint32_t)Z_LVAL(literals[first_literal + i]);
+			zval *dst = ZEND_CALL_VAR(parent_ed, parent_cv_offset);
+			zval_ptr_dtor(dst);
+			ZVAL_COPY_VALUE(dst, src);
+			ZVAL_UNDEF(src);
+		}
+	}
+
+	/* Set up scope_ed */
+	scope_ed->opline = opline + 1; /* next opcode after ENTER */
+	scope_ed->call = NULL;
+	scope_ed->return_value = EX(return_value);
+	scope_ed->func = EX(func);
+	scope_ed->prev_execute_data = EX(prev_execute_data); /* caller, not parent */
+	scope_ed->symbol_table = parent_ed->symbol_table;
+	scope_ed->run_time_cache = EX(run_time_cache);
+	scope_ed->extra_named_params = EX(extra_named_params);
+
+	/* Copy This and call_info from current frame */
+	ZVAL_COPY_VALUE(&scope_ed->This, &EX(This));
+	ZEND_CALL_NUM_ARGS(scope_ed) = ZEND_CALL_NUM_ARGS(execute_data);
+
+	/* Set recursion flag */
+	Z_EXTRA_P(this_ptr) = 1;
+
+	/* The INIT_DYNAMIC_CALL already added a ref for ZEND_CALL_CLOSURE.
+	 * We transfer (move) that ref to scope_ed — no additional ADDREF needed. */
+
+	/* Switch to scope_ed */
+	execute_data = scope_ed;
+	EG(current_execute_data) = scope_ed;
+
+	LOAD_OPLINE();
 	ZEND_VM_CONTINUE();
 }

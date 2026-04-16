@@ -181,6 +181,7 @@ typedef struct _zend_try_catch_element {
 #define ZEND_LIVE_SILENCE 2
 #define ZEND_LIVE_ROPE    3
 #define ZEND_LIVE_NEW     4
+#define ZEND_LIVE_SCOPE_FUNC 5
 #define ZEND_LIVE_MASK    7
 
 typedef struct _zend_live_range {
@@ -208,6 +209,7 @@ typedef struct _zend_oparray_context {
 	zend_property_hook_kind active_property_hook_kind;
 	bool       in_jmp_frameless_branch;
 	bool has_assigned_to_http_response_header;
+	zend_op_array *scope_func_parent_op_array; /* For scope funcs: parent's op_array (shared CVs) */
 } zend_oparray_context;
 
 /* Class, property and method flags                  class|meth.|prop.|const*/
@@ -415,7 +417,7 @@ typedef struct _zend_oparray_context {
 /* Function Flags 2 (fn_flags2) (unused: 0-31)            |     |     |     */
 /* ============================                           |     |     |     */
 /*                                                        |     |     |     */
-/* #define ZEND_ACC2_EXAMPLE             (1 << 0)         |  X  |     |     */
+#define ZEND_ACC2_SCOPE_FUNC            (1 << 0)  /*     |  X  |     |     */
 
 #define ZEND_ACC_PPP_MASK  (ZEND_ACC_PUBLIC | ZEND_ACC_PROTECTED | ZEND_ACC_PRIVATE)
 #define ZEND_ACC_PPP_SET_MASK  (ZEND_ACC_PUBLIC_SET | ZEND_ACC_PROTECTED_SET | ZEND_ACC_PRIVATE_SET)

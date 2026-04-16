@@ -343,6 +343,7 @@ void zend_oparray_context_begin(zend_oparray_context *prev_context, zend_op_arra
 	CG(context).brk_cont_array = NULL;
 	CG(context).labels = NULL;
 	CG(context).in_jmp_frameless_branch = false;
+	CG(context).scope_func_parent_op_array = NULL;
 	CG(context).active_property_info_name = NULL;
 	CG(context).active_property_hook_kind = (zend_property_hook_kind)-1;
 }
@@ -538,6 +539,12 @@ static zend_always_inline uint32_t get_temporary_variable(void) /* {{{ */
 
 static uint32_t lookup_cv(zend_string *name) /* {{{ */{
 	zend_op_array *op_array = CG(active_op_array);
+
+	/* For scope functions, body variable lookups go to the parent's CV table */
+	if (CG(context).scope_func_parent_op_array) {
+		op_array = CG(context).scope_func_parent_op_array;
+	}
+
 	int i = 0;
 	zend_ulong hash_value = zend_string_hash_val(name);
 
@@ -550,9 +557,24 @@ static uint32_t lookup_cv(zend_string *name) /* {{{ */{
 	}
 	i = op_array->last_var;
 	op_array->last_var++;
-	if (op_array->last_var > CG(context).vars_size) {
-		CG(context).vars_size += 16; /* FIXME */
-		op_array->vars = erealloc(op_array->vars, CG(context).vars_size * sizeof(zend_string*));
+
+	if (CG(context).scope_func_parent_op_array) {
+		/* Growing parent's vars array — use parent's context for sizing.
+		 * We need to find the parent context to track vars_size. For now,
+		 * use a simple realloc check. */
+		zend_oparray_context *ctx = CG(context).prev;
+		while (ctx && ctx->op_array != op_array) {
+			ctx = ctx->prev;
+		}
+		if (ctx && op_array->last_var > ctx->vars_size) {
+			ctx->vars_size += 16;
+			op_array->vars = erealloc(op_array->vars, ctx->vars_size * sizeof(zend_string*));
+		}
+	} else {
+		if (op_array->last_var > CG(context).vars_size) {
+			CG(context).vars_size += 16; /* FIXME */
+			op_array->vars = erealloc(op_array->vars, CG(context).vars_size * sizeof(zend_string*));
+		}
 	}
 
 	op_array->vars[i] = zend_string_copy(name);
@@ -8707,7 +8729,14 @@ static zend_string *zend_begin_func_decl(znode *result, zend_op_array *op_array,
 	switch (level) {
 		case FUNC_DECL_LEVEL_NESTED: {
 			uint32_t func_ref = zend_add_dynamic_func_def(op_array);
-			if (op_array->fn_flags & ZEND_ACC_CLOSURE) {
+			if (op_array->fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
+				uint32_t tracking_tmp = get_temporary_variable();
+				opline = zend_emit_op_tmp(result, ZEND_DECLARE_SCOPE_FUNC, NULL, NULL);
+				opline->op1_type = IS_TMP_VAR;
+				opline->op1.var = tracking_tmp;
+				opline->op2.num = func_ref;
+				/* extended_value (T_base) will be filled after scope func compilation */
+			} else if (op_array->fn_flags & ZEND_ACC_CLOSURE) {
 				opline = zend_emit_op_tmp(result, ZEND_DECLARE_LAMBDA_FUNCTION, NULL, NULL);
 				opline->op2.num = func_ref;
 			} else {
@@ -8727,6 +8756,92 @@ static zend_string *zend_begin_func_decl(znode *result, zend_op_array *op_array,
 	return lcname;
 }
 /* }}} */
+
+/* Fixup scope function opcodes: convert body opcode var offsets from positive
+ * (relative to the scope func's own frame) to negative (relative to scope_ed).
+ * RECV opcodes (before ENTER_SCOPE_FUNC) are left untouched.
+ *
+ * parent_last_var: the top-level parent's final last_var
+ * T_base: scope func's TMP allocation start in parent's T space
+ * scope_T: scope func's own T count
+ * num_params: scope func's parameter count (its last_var)
+ */
+static void zend_fixup_scope_func_offsets(
+	zend_op_array *scope_op,
+	uint32_t parent_last_var,
+	uint32_t T_base,
+	uint32_t scope_T
+) {
+	uint32_t num_params = scope_op->last_var;
+	/* scope_ed byte offset from top-level parent_ed */
+	uint32_t scope_ed_offset = (uint32_t)((ZEND_CALL_FRAME_SLOT + parent_last_var + T_base + scope_T) * sizeof(zval));
+	/* scope frame size for TMP fixup */
+	uint32_t scope_frame_size = (uint32_t)((ZEND_CALL_FRAME_SLOT + num_params + scope_T) * sizeof(zval));
+
+	bool in_body = false;
+	for (uint32_t i = 0; i < scope_op->last; i++) {
+		zend_op *opline = &scope_op->opcodes[i];
+
+		if (opline->opcode == ZEND_ENTER_SCOPE_FUNC) {
+			in_body = true;
+			/* Store scope_ed_offset in extended_value for runtime use */
+			opline->extended_value = scope_ed_offset;
+			continue;
+		}
+
+		if (!in_body) {
+			continue; /* Don't touch RECV opcodes */
+		}
+
+		/* Fix op1 */
+		if (opline->op1_type == IS_CV) {
+			opline->op1.var = opline->op1.var - scope_ed_offset;
+		} else if (opline->op1_type & (IS_VAR|IS_TMP_VAR)) {
+			opline->op1.var = opline->op1.var - scope_frame_size;
+		}
+
+		/* Fix op2 */
+		if (opline->op2_type == IS_CV) {
+			opline->op2.var = opline->op2.var - scope_ed_offset;
+		} else if (opline->op2_type & (IS_VAR|IS_TMP_VAR)) {
+			opline->op2.var = opline->op2.var - scope_frame_size;
+		}
+
+		/* Fix result */
+		if (opline->result_type == IS_CV) {
+			opline->result.var = opline->result.var - scope_ed_offset;
+		} else if (opline->result_type & (IS_VAR|IS_TMP_VAR)) {
+			opline->result.var = opline->result.var - scope_frame_size;
+		}
+	}
+
+	/* Fixup live_range entries that are in the body section */
+	for (uint32_t i = 0; i < scope_op->last_live_range; i++) {
+		uint32_t kind = scope_op->live_range[i].var & ZEND_LIVE_MASK;
+		uint32_t var = scope_op->live_range[i].var & ~ZEND_LIVE_MASK;
+		/* Live ranges for TMPs in body section need adjustment */
+		/* Check if the live_range start is after the ENTER opcode */
+		/* For now, adjust all TMP live ranges */
+		var -= scope_frame_size;
+		scope_op->live_range[i].var = var | kind;
+	}
+
+	/* Recursively fix nested scope functions */
+	for (uint32_t i = 0; i < scope_op->num_dynamic_func_defs; i++) {
+		zend_op_array *nested = scope_op->dynamic_func_defs[i];
+		if (nested->fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
+			/* Find the DECLARE_SCOPE_FUNC opline for this nested func */
+			for (uint32_t j = 0; j < scope_op->last; j++) {
+				zend_op *op = &scope_op->opcodes[j];
+				if (op->opcode == ZEND_DECLARE_SCOPE_FUNC && op->op2.num == i) {
+					uint32_t nested_T_base = T_base + op->extended_value;
+					zend_fixup_scope_func_offsets(nested, parent_last_var, nested_T_base, nested->T);
+					break;
+				}
+			}
+		}
+	}
+}
 
 static zend_op_array *zend_compile_func_decl_ex(
 	znode *result, zend_ast *ast, enum func_decl_level level,
@@ -8762,8 +8877,18 @@ static zend_op_array *zend_compile_func_decl_ex(
 		op_array->doc_comment = zend_string_copy(decl->doc_comment);
 	}
 
-	if (decl->kind == ZEND_AST_CLOSURE || decl->kind == ZEND_AST_ARROW_FUNC) {
+	if (decl->kind == ZEND_AST_CLOSURE || decl->kind == ZEND_AST_ARROW_FUNC
+			|| decl->kind == ZEND_AST_SCOPE_FUNC) {
 		op_array->fn_flags |= ZEND_ACC_CLOSURE;
+	}
+	if (decl->kind == ZEND_AST_SCOPE_FUNC) {
+		op_array->fn_flags2 |= ZEND_ACC2_SCOPE_FUNC;
+		if (decl->flags & ZEND_ACC_STATIC) {
+			zend_error_noreturn(E_COMPILE_ERROR, "Scope functions cannot be static");
+		}
+		if (uses_ast) {
+			zend_error_noreturn(E_COMPILE_ERROR, "Scope functions cannot have a use() clause");
+		}
 	}
 
 	if (is_hook) {
@@ -8853,6 +8978,70 @@ static zend_op_array *zend_compile_func_decl_ex(
 		zend_compile_closure_uses(uses_ast);
 	}
 
+	if (decl->kind == ZEND_AST_SCOPE_FUNC) {
+		/* Scope functions cannot be generators */
+		if (CG(active_op_array)->fn_flags & ZEND_ACC_GENERATOR) {
+			zend_error_noreturn(E_COMPILE_ERROR, "Scope functions cannot be generators");
+		}
+
+		/* Register scope func params in parent's CV table and record mapping.
+		 * At this point, the scope func's own CV table has params at indices 0..num_args-1.
+		 * We need to also register them in the parent's CV table. */
+		uint32_t num_params = op_array->last_var;
+		uint32_t *param_parent_cv_offsets = NULL;
+		if (num_params > 0) {
+			param_parent_cv_offsets = safe_emalloc(num_params, sizeof(uint32_t), 0);
+			for (uint32_t i = 0; i < num_params; i++) {
+				/* Look up in parent — this creates the CV if it doesn't exist */
+				zend_op_array *parent = orig_op_array;
+				zend_ulong hash_value = zend_string_hash_val(op_array->vars[i]);
+				uint32_t parent_cv = (uint32_t)-1;
+				for (int j = 0; j < parent->last_var; j++) {
+					if (ZSTR_H(parent->vars[j]) == hash_value
+					 && zend_string_equals(parent->vars[j], op_array->vars[i])) {
+						parent_cv = EX_NUM_TO_VAR(j);
+						break;
+					}
+				}
+				if (parent_cv == (uint32_t)-1) {
+					/* Add to parent's CV table */
+					int idx = parent->last_var;
+					parent->last_var++;
+					zend_oparray_context *pctx = CG(context).prev;
+					while (pctx && pctx->op_array != parent) {
+						pctx = pctx->prev;
+					}
+					if (pctx && parent->last_var > pctx->vars_size) {
+						pctx->vars_size += 16;
+						parent->vars = erealloc(parent->vars, pctx->vars_size * sizeof(zend_string*));
+					}
+					parent->vars[idx] = zend_string_copy(op_array->vars[i]);
+					parent_cv = EX_NUM_TO_VAR(idx);
+				}
+				param_parent_cv_offsets[i] = parent_cv;
+			}
+		}
+
+		/* Emit ZEND_ENTER_SCOPE_FUNC — this is the boundary between RECV and body */
+		zend_op *enter_opline = zend_emit_op(NULL, ZEND_ENTER_SCOPE_FUNC, NULL, NULL);
+		enter_opline->op1.num = num_params;
+		/* Store param_parent_cv_offsets mapping in literals */
+		if (num_params > 0) {
+			/* Store as a series of literals: each is a long with the parent CV offset */
+			uint32_t first_literal = CG(active_op_array)->last_literal;
+			for (uint32_t i = 0; i < num_params; i++) {
+				zval zv;
+				ZVAL_LONG(&zv, param_parent_cv_offsets[i]);
+				zend_add_literal(&zv);
+			}
+			enter_opline->op2.num = first_literal;
+			efree(param_parent_cv_offsets);
+		}
+
+		/* Enable shared CV lookup for the body compilation */
+		CG(context).scope_func_parent_op_array = orig_op_array;
+	}
+
 	if (ast->kind == ZEND_AST_ARROW_FUNC && decl->child[2]->kind != ZEND_AST_RETURN) {
 		bool needs_return = true;
 		if (op_array->fn_flags & ZEND_ACC_HAS_RETURN_TYPE) {
@@ -8910,6 +9099,29 @@ static zend_op_array *zend_compile_func_decl_ex(
 	zend_emit_final_return(false);
 
 	pass_two(CG(active_op_array));
+
+	/* After pass_two: fix up scope function children's offsets.
+	 * At this point, the current op_array's last_var is final. */
+	for (uint32_t i = 0; i < CG(active_op_array)->num_dynamic_func_defs; i++) {
+		zend_op_array *child = CG(active_op_array)->dynamic_func_defs[i];
+		if (child->fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
+			/* Find the DECLARE_SCOPE_FUNC opline for this child */
+			for (uint32_t j = 0; j < CG(active_op_array)->last; j++) {
+				zend_op *op = &CG(active_op_array)->opcodes[j];
+				if (op->opcode == ZEND_DECLARE_SCOPE_FUNC && op->op2.num == i) {
+					uint32_t T_base = op->extended_value;
+					zend_fixup_scope_func_offsets(
+						child,
+						CG(active_op_array)->last_var,
+						T_base,
+						child->T
+					);
+					break;
+				}
+			}
+		}
+	}
+
 	zend_oparray_context_end(&orig_oparray_context);
 
 	/* Pop the loop variable stack separator */
@@ -8925,6 +9137,27 @@ static zend_op_array *zend_compile_func_decl_ex(
 
 	CG(active_op_array) = orig_op_array;
 	CG(active_class_entry) = orig_class_entry;
+
+	/* After scope func compilation: reserve parent TMP space for scope_ed + TMPs */
+	if (decl->kind == ZEND_AST_SCOPE_FUNC) {
+		uint32_t T_base = orig_op_array->T;
+		uint32_t scope_frame_tmps = op_array->T + ZEND_CALL_FRAME_SLOT;
+		orig_op_array->T += scope_frame_tmps;
+
+		/* Fill in the T_base in the DECLARE_SCOPE_FUNC opline.
+		 * The DECLARE opline was emitted in the parent before we compiled the scope func.
+		 * We need to find it — it's at result's opline. */
+		/* The result node was set by zend_begin_func_decl.
+		 * The opline index was stored in result->u.op.var's generation.
+		 * Actually, we can search backwards for it. */
+		for (uint32_t i = orig_op_array->last; i > 0; i--) {
+			zend_op *op = &orig_op_array->opcodes[i - 1];
+			if (op->opcode == ZEND_DECLARE_SCOPE_FUNC) {
+				op->extended_value = T_base;
+				break;
+			}
+		}
+	}
 
 	return op_array;
 }
@@ -12231,6 +12464,7 @@ static void zend_compile_expr_inner(znode *result, zend_ast *ast) /* {{{ */
 			return;
 		case ZEND_AST_CLOSURE:
 		case ZEND_AST_ARROW_FUNC:
+		case ZEND_AST_SCOPE_FUNC:
 			zend_compile_func_decl(result, ast, FUNC_DECL_LEVEL_NESTED);
 			return;
 		case ZEND_AST_THROW:

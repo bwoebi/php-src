@@ -4961,6 +4961,14 @@ static void cleanup_live_vars(zend_execute_data *execute_data, uint32_t op_num, 
 							&& !E_HAS_ONLY_FATAL_ERRORS(Z_LVAL_P(var))) {
 						EG(error_reporting) = Z_LVAL_P(var);
 					}
+				} else if (kind == ZEND_LIVE_SCOPE_FUNC) {
+					/* Invalidate scope function closure on parent exit */
+					if (Z_TYPE_P(var) == IS_OBJECT) {
+						zval *this_ptr = zend_closure_get_this_ptr_ptr(Z_OBJ_P(var));
+						Z_PTR_P(this_ptr) = NULL; /* invalidate */
+						OBJ_RELEASE(Z_OBJ_P(var));
+						ZVAL_UNDEF(var);
+					}
 				}
 			}
 		}

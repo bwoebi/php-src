@@ -951,6 +951,19 @@ static void zend_calc_live_ranges(
 	memset(last_use, -1, sizeof(uint32_t) * op_array->T);
 
 	ZEND_ASSERT(!op_array->live_range);
+
+	/* Emit ZEND_LIVE_SCOPE_FUNC ranges for scope function tracking TMPs.
+	 * These TMPs are defined in op1 of DECLARE_SCOPE_FUNC and live until function end.
+	 * They are not consumed by any opcode, so the standard def-use analysis won't find them. */
+	for (uint32_t i = 0; i < op_array->last; i++) {
+		if (op_array->opcodes[i].opcode == ZEND_DECLARE_SCOPE_FUNC) {
+			uint32_t var_num = EX_VAR_TO_NUM(op_array->opcodes[i].op1.var) - var_offset;
+			emit_live_range_raw(op_array, var_num, ZEND_LIVE_SCOPE_FUNC, i, op_array->last - 1);
+			/* Mark this TMP as already handled so the main loop doesn't create a conflicting range */
+			last_use[var_num] = (uint32_t) -2;
+		}
+	}
+
 	while (opnum > 0) {
 		opnum--;
 		opline--;
