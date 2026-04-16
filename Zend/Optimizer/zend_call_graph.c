@@ -248,6 +248,9 @@ ZEND_API void zend_build_call_graph(zend_arena **arena, zend_script *script, zen
 ZEND_API void zend_analyze_call_graph(zend_arena **arena, zend_script *script, zend_call_graph *call_graph) /* {{{ */
 {
 	for (uint32_t i = 0; i < call_graph->op_arrays_count; i++) {
+		if (call_graph->op_arrays[i]->fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
+			continue;
+		}
 		zend_analyze_calls(arena, script, 0, call_graph->op_arrays[i], call_graph->func_infos + i);
 	}
 	zend_analyze_recursion(call_graph);

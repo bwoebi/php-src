@@ -3216,6 +3216,18 @@ void ZEND_FASTCALL zend_jit_hot_func(zend_execute_data *execute_data, const zend
 
 static void zend_jit_setup_hot_counters_ex(zend_op_array *op_array, zend_cfg *cfg)
 {
+	/* Skip hot counter setup for scope funcs and their parents.
+	 * Scope func op_arrays have negative var offsets incompatible with JIT.
+	 * Parent op_arrays have reserved TMPs that would break if JIT-compiled. */
+	if (op_array->fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
+		return;
+	}
+	for (uint32_t j = 0; j < op_array->last; j++) {
+		if (op_array->opcodes[j].opcode == ZEND_DECLARE_SCOPE_FUNC) {
+			return;
+		}
+	}
+
 	if (JIT_G(hot_func)) {
 		zend_op *opline = op_array->opcodes;
 
@@ -3300,6 +3312,17 @@ int zend_jit_op_array(zend_op_array *op_array, zend_script *script)
 {
 	if (dasm_ptr == NULL) {
 		return FAILURE;
+	}
+
+	/* Scope function op_arrays and their parents use offsets/layouts
+	 * incompatible with JIT compilation */
+	if (op_array->fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
+		return SUCCESS;
+	}
+	for (uint32_t j = 0; j < op_array->last; j++) {
+		if (op_array->opcodes[j].opcode == ZEND_DECLARE_SCOPE_FUNC) {
+			return SUCCESS;
+		}
 	}
 
 	if (JIT_G(trigger) == ZEND_JIT_ON_FIRST_EXEC) {

@@ -23,6 +23,14 @@
 void zend_optimizer_compact_vars(zend_op_array *op_array) {
 	int i;
 
+	/* Skip for parent op_arrays containing scope functions — reserved TMPs
+	 * must stay at their fixed positions for the scope_ed frame layout. */
+	for (i = 0; i < op_array->last; i++) {
+		if (op_array->opcodes[i].opcode == ZEND_DECLARE_SCOPE_FUNC) {
+			return;
+		}
+	}
+
 	ALLOCA_FLAG(use_heap1);
 	ALLOCA_FLAG(use_heap2);
 	uint32_t used_vars_len = zend_bitset_len(op_array->last_var + op_array->T);

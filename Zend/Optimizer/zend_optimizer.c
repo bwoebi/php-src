@@ -1048,10 +1048,25 @@ zend_op *zend_optimizer_get_loop_var_def(const zend_op_array *op_array, zend_op 
 	return NULL;
 }
 
+static bool zend_op_array_has_scope_funcs(const zend_op_array *op_array) {
+	for (uint32_t i = 0; i < op_array->last; i++) {
+		if (op_array->opcodes[i].opcode == ZEND_DECLARE_SCOPE_FUNC) {
+			return true;
+		}
+	}
+	return false;
+}
+
 static void zend_optimize(zend_op_array      *op_array,
                           zend_optimizer_ctx *ctx)
 {
 	if (op_array->type == ZEND_EVAL_CODE) {
+		return;
+	}
+
+	/* Skip optimization for op_arrays that contain scope function declarations.
+	 * The optimizer may reorder TMPs, breaking the fixed scope_ed frame layout. */
+	if (zend_op_array_has_scope_funcs(op_array)) {
 		return;
 	}
 
@@ -1451,6 +1466,11 @@ static void zend_redo_pass_two_ex(zend_op_array *op_array, const zend_ssa *ssa)
 static void zend_optimize_op_array(zend_op_array      *op_array,
                                    zend_optimizer_ctx *ctx)
 {
+	/* Scope function op_arrays use negative var offsets incompatible with the optimizer */
+	if (op_array->fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
+		return;
+	}
+
 	/* Revert pass_two() */
 	zend_revert_pass_two(op_array);
 
@@ -1617,6 +1637,9 @@ ZEND_API void zend_optimize_script(zend_script *script, zend_long optimization_l
 		zend_func_info *func_info;
 
 		for (i = 0; i < call_graph.op_arrays_count; i++) {
+			if (call_graph.op_arrays[i]->fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
+				continue;
+			}
 			zend_revert_pass_two(call_graph.op_arrays[i]);
 			zend_optimize(call_graph.op_arrays[i], &ctx);
 		}
@@ -1634,6 +1657,10 @@ ZEND_API void zend_optimize_script(zend_script *script, zend_long optimization_l
 		}
 
 		for (i = 0; i < call_graph.op_arrays_count; i++) {
+			if ((call_graph.op_arrays[i]->fn_flags2 & ZEND_ACC2_SCOPE_FUNC)
+			    || zend_op_array_has_scope_funcs(call_graph.op_arrays[i])) {
+				continue;
+			}
 			func_info = ZEND_FUNC_INFO(call_graph.op_arrays[i]);
 			if (func_info) {
 				if (zend_dfa_analyze_op_array(call_graph.op_arrays[i], &ctx, &func_info->ssa) == SUCCESS) {
@@ -1660,6 +1687,10 @@ ZEND_API void zend_optimize_script(zend_script *script, zend_long optimization_l
 
 		if (ZEND_OPTIMIZER_PASS_9 & optimization_level) {
 			for (i = 0; i < call_graph.op_arrays_count; i++) {
+				if ((call_graph.op_arrays[i]->fn_flags2 & ZEND_ACC2_SCOPE_FUNC)
+				    || zend_op_array_has_scope_funcs(call_graph.op_arrays[i])) {
+					continue;
+				}
 				zend_optimize_temporary_variables(call_graph.op_arrays[i], &ctx);
 				if (debug_level & ZEND_DUMP_AFTER_PASS_9) {
 					zend_dump_op_array(call_graph.op_arrays[i], 0, "after pass 9", NULL);
@@ -1669,6 +1700,10 @@ ZEND_API void zend_optimize_script(zend_script *script, zend_long optimization_l
 
 		if (ZEND_OPTIMIZER_PASS_11 & optimization_level) {
 			for (i = 0; i < call_graph.op_arrays_count; i++) {
+				if ((call_graph.op_arrays[i]->fn_flags2 & ZEND_ACC2_SCOPE_FUNC)
+				    || zend_op_array_has_scope_funcs(call_graph.op_arrays[i])) {
+					continue;
+				}
 				zend_optimizer_compact_literals(call_graph.op_arrays[i], &ctx);
 				if (debug_level & ZEND_DUMP_AFTER_PASS_11) {
 					zend_dump_op_array(call_graph.op_arrays[i], 0, "after pass 11", NULL);
@@ -1678,6 +1713,10 @@ ZEND_API void zend_optimize_script(zend_script *script, zend_long optimization_l
 
 		if (ZEND_OPTIMIZER_PASS_13 & optimization_level) {
 			for (i = 0; i < call_graph.op_arrays_count; i++) {
+				if ((call_graph.op_arrays[i]->fn_flags2 & ZEND_ACC2_SCOPE_FUNC)
+				    || zend_op_array_has_scope_funcs(call_graph.op_arrays[i])) {
+					continue;
+				}
 				zend_optimizer_compact_vars(call_graph.op_arrays[i]);
 				if (debug_level & ZEND_DUMP_AFTER_PASS_13) {
 					zend_dump_op_array(call_graph.op_arrays[i], 0, "after pass 13", NULL);
@@ -1693,6 +1732,9 @@ ZEND_API void zend_optimize_script(zend_script *script, zend_long optimization_l
 
 		for (i = 0; i < call_graph.op_arrays_count; i++) {
 			op_array = call_graph.op_arrays[i];
+			if (op_array->fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
+				continue; /* Never reverted, so don't redo */
+			}
 			func_info = ZEND_FUNC_INFO(op_array);
 			if (func_info && func_info->ssa.var_info) {
 				zend_redo_pass_two_ex(op_array, &func_info->ssa);
