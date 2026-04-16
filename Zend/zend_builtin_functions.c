@@ -289,6 +289,42 @@ ZEND_FUNCTION(func_get_arg)
 		RETURN_THROWS();
 	}
 
+	/* For scope functions, args are in parent CVs (declared params)
+	 * and in the original call frame (extra args). */
+	if (ex->func && (ex->func->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)) {
+		zval *this_ptr = zend_closure_get_this_ptr_ptr(ZEND_CLOSURE_OBJECT(ex->func));
+		zend_execute_data *parent_ex = (zend_execute_data *)Z_PTR_P(this_ptr);
+		uint32_t num_params = ex->func->op_array.num_args;
+		if (parent_ex && (zend_ulong)requested_offset < num_params) {
+			/* Declared param: read from parent CV */
+			uint32_t first_literal = 0;
+			for (uint32_t j = 0; j < ex->func->op_array.last; j++) {
+				if (ex->func->op_array.opcodes[j].opcode == ZEND_ENTER_SCOPE_FUNC) {
+					first_literal = ex->func->op_array.opcodes[j].op2.num;
+					break;
+				}
+			}
+			uint32_t parent_cv_offset = (uint32_t)Z_LVAL(ex->func->op_array.literals[first_literal + requested_offset]);
+			arg = ZEND_CALL_VAR(parent_ex, parent_cv_offset);
+		} else if ((zend_ulong)requested_offset >= num_params) {
+			/* Extra arg: read from original call frame (tagged ptr) */
+			zend_execute_data *call_frame = (zend_execute_data *)((uintptr_t)ex->extra_named_params & ~(uintptr_t)1);
+			if (call_frame) {
+				arg = ZEND_CALL_VAR_NUM(call_frame,
+					call_frame->func->op_array.last_var + call_frame->func->op_array.T)
+					+ (requested_offset - num_params);
+			} else {
+				RETURN_NULL();
+			}
+		} else {
+			RETURN_NULL();
+		}
+		if (EXPECTED(!Z_ISUNDEF_P(arg))) {
+			RETURN_COPY_DEREF(arg);
+		}
+		return;
+	}
+
 	first_extra_arg = ex->func->op_array.num_args;
 	if ((zend_ulong)requested_offset >= first_extra_arg && (ZEND_CALL_NUM_ARGS(ex) > first_extra_arg)) {
 		arg = ZEND_CALL_VAR_NUM(ex, ex->func->op_array.last_var + ex->func->op_array.T) + (requested_offset - first_extra_arg);
@@ -321,6 +357,45 @@ ZEND_FUNCTION(func_get_args)
 	}
 
 	arg_count = ZEND_CALL_NUM_ARGS(ex);
+
+	/* For scope functions, args were moved to parent CVs by ENTER_SCOPE_FUNC.
+	 * Read them from the parent's CV slots using the literal mapping. */
+	if (arg_count && ex->func && (ex->func->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)) {
+		zval *this_ptr = zend_closure_get_this_ptr_ptr(ZEND_CLOSURE_OBJECT(ex->func));
+		zend_execute_data *parent_ed = (zend_execute_data *)Z_PTR_P(this_ptr);
+		if (parent_ed) {
+			/* Find the ENTER_SCOPE_FUNC opcode to get the literal mapping */
+			zend_op_array *op_array = &ex->func->op_array;
+			uint32_t num_params = op_array->num_args;
+			uint32_t first_literal = 0;
+			for (uint32_t j = 0; j < op_array->last; j++) {
+				if (op_array->opcodes[j].opcode == ZEND_ENTER_SCOPE_FUNC) {
+					first_literal = op_array->opcodes[j].op2.num;
+					break;
+				}
+			}
+			array_init_size(return_value, arg_count);
+			zend_hash_real_init_packed(Z_ARRVAL_P(return_value));
+			ZEND_HASH_FILL_PACKED(Z_ARRVAL_P(return_value)) {
+				for (i = 0; i < arg_count && i < num_params; i++) {
+					uint32_t parent_cv_offset = (uint32_t)Z_LVAL(op_array->literals[first_literal + i]);
+					q = ZEND_CALL_VAR(parent_ed, parent_cv_offset);
+					if (EXPECTED(!Z_ISUNDEF_P(q))) {
+						ZVAL_DEREF(q);
+						Z_TRY_ADDREF_P(q);
+						ZEND_HASH_FILL_SET(q);
+					} else {
+						ZEND_HASH_FILL_SET_NULL();
+					}
+					ZEND_HASH_FILL_NEXT();
+				}
+				/* TODO: extra args beyond num_params */
+			} ZEND_HASH_FILL_END();
+		} else {
+			RETURN_EMPTY_ARRAY();
+		}
+		return;
+	}
 
 	if (arg_count) {
 		array_init_size(return_value, arg_count);

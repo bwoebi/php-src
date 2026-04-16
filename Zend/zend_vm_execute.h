@@ -1152,10 +1152,15 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV 
 	SAVE_OPLINE();
 #endif
 
-	/* Scope function: don't free CVs, don't pop VM stack */
-	if (UNEXPECTED(EX(func) && EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)) {
+	/* Scope function: don't free CVs, don't pop VM stack for scope_ed itself.
+	 * We detect we're on scope_ed (not the initial call frame) by checking if
+	 * extra_named_params has the low bit set (tagged pointer from ENTER_SCOPE_FUNC). */
+	if (UNEXPECTED(EX(func) && (EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)
+	    && ((uintptr_t)EX(extra_named_params) & 1))) {
 		zend_object *closure_obj = ZEND_CLOSURE_OBJECT(EX(func));
 		zval *this_ptr = zend_closure_get_this_ptr_ptr(closure_obj);
+		/* Retrieve original call frame (clear the tag bit) */
+		zend_execute_data *original_call_frame = (zend_execute_data *)((uintptr_t)EX(extra_named_params) & ~(uintptr_t)1);
 
 		/* Clear recursion flag */
 		Z_EXTRA_P(this_ptr) = 0;
@@ -1165,9 +1170,44 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV 
 		/* Release the ZEND_CALL_CLOSURE ref (transferred from INIT_DYNAMIC_CALL) */
 		OBJ_RELEASE(closure_obj);
 
-		/* Do NOT free CVs — parent owns them */
-		/* Do NOT pop VM stack — scope_ed is in parent's frame */
+		/* Clean up any nested scope func tracking TMPs */
+		if (UNEXPECTED(ZEND_USER_CODE(EX(func)->type) && EX(func)->op_array.last_live_range)) {
+			for (uint32_t i = 0; i < EX(func)->op_array.last_live_range; i++) {
+				uint32_t kind = EX(func)->op_array.live_range[i].var & ZEND_LIVE_MASK;
+				if (kind == ZEND_LIVE_SCOPE_FUNC) {
+					uint32_t var_num = EX(func)->op_array.live_range[i].var & ~ZEND_LIVE_MASK;
+					zval *var = EX_VAR(var_num);
+					if (Z_TYPE_P(var) == IS_OBJECT) {
+						zval *tp = zend_closure_get_this_ptr_ptr(Z_OBJ_P(var));
+						Z_PTR_P(tp) = NULL;
+						OBJ_RELEASE(Z_OBJ_P(var));
+						ZVAL_UNDEF(var);
+					}
+				}
+			}
+		}
+
+		/* Do NOT free CVs — parent owns them. */
 		execute_data = EX(prev_execute_data);
+
+		if (UNEXPECTED(call_info & ZEND_CALL_TOP)) {
+			/* Called via zend_call_function: exit execute_ex.
+			 * The caller (zend_call_function) frees the original call frame. */
+			ZEND_VM_RETURN();
+		}
+
+		/* Standard VM path: pop the original call frame from the VM stack.
+		 * If there are extra args, free them first, then pop. */
+		if (original_call_frame) {
+			if (UNEXPECTED(ZEND_CALL_INFO(original_call_frame) & ZEND_CALL_FREE_EXTRA_ARGS)) {
+				zend_vm_stack_free_extra_args_ex(
+					ZEND_CALL_INFO(original_call_frame), original_call_frame);
+			}
+			if (UNEXPECTED(ZEND_CALL_INFO(original_call_frame) & ZEND_CALL_HAS_EXTRA_NAMED_PARAMS)) {
+				zend_free_extra_named_params(original_call_frame->extra_named_params);
+			}
+			EG(vm_stack_top) = (zval *)original_call_frame;
+		}
 
 		if (UNEXPECTED(EG(exception) != NULL)) {
 			zend_rethrow_exception(execute_data);
@@ -1182,8 +1222,12 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV 
 		EG(current_execute_data) = EX(prev_execute_data);
 		i_free_compiled_variables(execute_data);
 
-		/* Invalidate scope function tracking TMPs */
-		if (UNEXPECTED(ZEND_USER_CODE(EX(func)->type) && EX(func)->op_array.last_live_range)) {
+		/* Invalidate scope function tracking TMPs.
+		 * Only for non-scope-func parents — scope funcs have negative TMP offsets
+		 * that are only valid from scope_ed, not from the VM stack call frame. */
+		if (UNEXPECTED(ZEND_USER_CODE(EX(func)->type)
+		    && !(EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)
+		    && EX(func)->op_array.last_live_range)) {
 			for (uint32_t i = 0; i < EX(func)->op_array.last_live_range; i++) {
 				uint32_t kind = EX(func)->op_array.live_range[i].var & ZEND_LIVE_MASK;
 				if (kind == ZEND_LIVE_SCOPE_FUNC) {
@@ -1193,6 +1237,7 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV 
 						zval *tp = zend_closure_get_this_ptr_ptr(Z_OBJ_P(var));
 						Z_PTR_P(tp) = NULL;
 						OBJ_RELEASE(Z_OBJ_P(var));
+						ZVAL_UNDEF(var);
 					}
 				}
 			}
@@ -1220,8 +1265,12 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV 
 		EG(current_execute_data) = EX(prev_execute_data);
 		i_free_compiled_variables(execute_data);
 
-		/* Invalidate scope function tracking TMPs */
-		if (UNEXPECTED(ZEND_USER_CODE(EX(func)->type) && EX(func)->op_array.last_live_range)) {
+		/* Invalidate scope function tracking TMPs.
+		 * Only for non-scope-func parents — scope funcs have negative TMP offsets
+		 * that are only valid from scope_ed, not from the VM stack call frame. */
+		if (UNEXPECTED(ZEND_USER_CODE(EX(func)->type)
+		    && !(EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)
+		    && EX(func)->op_array.last_live_range)) {
 			for (uint32_t i = 0; i < EX(func)->op_array.last_live_range; i++) {
 				uint32_t kind = EX(func)->op_array.live_range[i].var & ZEND_LIVE_MASK;
 				if (kind == ZEND_LIVE_SCOPE_FUNC) {
@@ -1231,6 +1280,7 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV 
 						zval *tp = zend_closure_get_this_ptr_ptr(Z_OBJ_P(var));
 						Z_PTR_P(tp) = NULL;
 						OBJ_RELEASE(Z_OBJ_P(var));
+						ZVAL_UNDEF(var);
 					}
 				}
 			}
@@ -4094,8 +4144,10 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_ENTER_SCOPE_F
 	zval *this_ptr = zend_closure_get_this_ptr_ptr(closure_obj);
 	zend_execute_data *parent_ed;
 	zend_execute_data *scope_ed;
+	zend_execute_data *call_frame = execute_data;
 	uint32_t num_params = opline->op1.num;
 	uint32_t scope_ed_offset = opline->extended_value;
+	uint32_t call_info = EX_CALL_INFO();
 
 	SAVE_OPLINE();
 
@@ -4115,15 +4167,14 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_ENTER_SCOPE_F
 	/* Compute scope_ed from parent_ed + stored offset */
 	scope_ed = (zend_execute_data *)((char *)parent_ed + scope_ed_offset);
 
-	/* Copy args from call frame (positive offsets) to parent CVs */
+	/* Copy ALL params from call frame to parent CVs.
+	 * For args 0..num_args-1: passed values (from SEND).
+	 * For args num_args..num_params-1: default values (from RECV_INIT). */
 	if (num_params > 0) {
 		uint32_t first_literal = opline->op2.num;
-		uint32_t num_args = EX_NUM_ARGS();
-		uint32_t copy_count = MIN(num_args, num_params);
 		zval *literals = EX(func)->op_array.literals;
-		for (uint32_t i = 0; i < copy_count; i++) {
-			zval *src = ZEND_CALL_ARG(execute_data, i + 1);
-			/* Get parent CV offset from literal array */
+		for (uint32_t i = 0; i < num_params; i++) {
+			zval *src = ZEND_CALL_ARG(call_frame, i + 1);
 			uint32_t parent_cv_offset = (uint32_t)Z_LVAL(literals[first_literal + i]);
 			zval *dst = ZEND_CALL_VAR(parent_ed, parent_cv_offset);
 			zval_ptr_dtor(dst);
@@ -4140,11 +4191,14 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_ENTER_SCOPE_F
 	scope_ed->prev_execute_data = EX(prev_execute_data); /* caller, not parent */
 	scope_ed->symbol_table = parent_ed->symbol_table;
 	scope_ed->run_time_cache = EX(run_time_cache);
-	scope_ed->extra_named_params = EX(extra_named_params);
+	/* Stash original call frame pointer for cleanup in leave_helper.
+	 * We repurpose extra_named_params since scope_ed doesn't need it.
+	 * Tag with low bit to distinguish from real zend_array pointers. */
+	scope_ed->extra_named_params = (zend_array *)((uintptr_t)call_frame | 1);
 
 	/* Copy This and call_info from current frame */
 	ZVAL_COPY_VALUE(&scope_ed->This, &EX(This));
-	ZEND_CALL_NUM_ARGS(scope_ed) = ZEND_CALL_NUM_ARGS(execute_data);
+	ZEND_CALL_NUM_ARGS(scope_ed) = ZEND_CALL_NUM_ARGS(call_frame);
 
 	/* Set recursion flag */
 	Z_EXTRA_P(this_ptr) = 1;
@@ -12025,6 +12079,67 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_FUNC_GET_ARGS
 		result_size = arg_count;
 	}
 
+	/* For scope functions, args were moved to parent CVs by ENTER_SCOPE_FUNC.
+	 * Read them from the parent's CV slots using the literal mapping. */
+	if (result_size && (EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)) {
+		SAVE_OPLINE();
+		zval *this_ptr = zend_closure_get_this_ptr_ptr(ZEND_CLOSURE_OBJECT(EX(func)));
+		zend_execute_data *parent_ed = (zend_execute_data *)Z_PTR_P(this_ptr);
+		uint32_t num_params = EX(func)->op_array.num_args;
+		/* Find ENTER_SCOPE_FUNC to get the literal mapping */
+		uint32_t first_literal = 0;
+		for (uint32_t j = 0; j < EX(func)->op_array.last; j++) {
+			if (EX(func)->op_array.opcodes[j].opcode == ZEND_ENTER_SCOPE_FUNC) {
+				first_literal = EX(func)->op_array.opcodes[j].op2.num;
+				break;
+			}
+		}
+		ht = zend_new_array(result_size);
+		ZVAL_ARR(EX_VAR(opline->result.var), ht);
+		zend_hash_real_init_packed(ht);
+		ZEND_HASH_FILL_PACKED(ht) {
+			uint32_t i = skip;
+			/* Declared params: read from parent CVs */
+			for (; i < arg_count && i < num_params; i++) {
+				uint32_t parent_cv_offset = (uint32_t)Z_LVAL(EX(func)->op_array.literals[first_literal + i]);
+				zval *q = ZEND_CALL_VAR(parent_ed, parent_cv_offset);
+				if (EXPECTED(Z_TYPE_INFO_P(q) != IS_UNDEF)) {
+					ZVAL_DEREF(q);
+					Z_TRY_ADDREF_P(q);
+					ZEND_HASH_FILL_SET(q);
+				} else {
+					ZEND_HASH_FILL_SET_NULL();
+				}
+				ZEND_HASH_FILL_NEXT();
+			}
+			/* Extra args: read from the original call frame (tagged ptr in extra_named_params) */
+			if (i < arg_count) {
+				zend_execute_data *call_frame = (zend_execute_data *)((uintptr_t)EX(extra_named_params) & ~(uintptr_t)1);
+				if (call_frame) {
+					zval *p = ZEND_CALL_VAR_NUM(call_frame,
+						call_frame->func->op_array.last_var + call_frame->func->op_array.T);
+					if (skip > num_params) {
+						p += (skip - num_params);
+					}
+					while (i < arg_count) {
+						zval *q = p;
+						if (EXPECTED(Z_TYPE_INFO_P(q) != IS_UNDEF)) {
+							ZVAL_DEREF(q);
+							Z_TRY_ADDREF_P(q);
+							ZEND_HASH_FILL_SET(q);
+						} else {
+							ZEND_HASH_FILL_SET_NULL();
+						}
+						ZEND_HASH_FILL_NEXT();
+						p++;
+						i++;
+					}
+				}
+			}
+		} ZEND_HASH_FILL_END();
+		ZEND_VM_NEXT_OPCODE_CHECK_EXCEPTION();
+	}
+
 	if (result_size) {
 		SAVE_OPLINE();
 		uint32_t first_extra_arg = EX(func)->op_array.num_args;
@@ -18419,10 +18534,18 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_DECLARE_SCOPE
 	zend_create_closure(EX_VAR(opline->result.var), func,
 		EX(func)->op_array.scope, called_scope, object);
 
-	/* Store parent_execute_data and recursion flag in closure's this_ptr */
+	/* Store top-level parent_execute_data and recursion flag in closure's this_ptr.
+	 * For nested scope funcs (DECLARE runs inside another scope func), follow
+	 * the chain to the top-level parent where all CVs reside. */
 	{
 		zval *this_ptr = zend_closure_get_this_ptr_ptr(Z_OBJ_P(EX_VAR(opline->result.var)));
-		Z_PTR_P(this_ptr) = execute_data;
+		zend_execute_data *parent = execute_data;
+		if (EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
+			/* We're inside a scope func — get the top-level parent from our own closure */
+			zval *our_this_ptr = zend_closure_get_this_ptr_ptr(ZEND_CLOSURE_OBJECT(EX(func)));
+			parent = (zend_execute_data *)Z_PTR_P(our_this_ptr);
+		}
+		Z_PTR_P(this_ptr) = parent;
 		Z_EXTRA_P(this_ptr) = 0;
 		Z_TYPE_INFO_P(this_ptr) = IS_PTR;
 	}
@@ -37565,6 +37688,67 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_FUNC_GET_ARGS
 		result_size = arg_count;
 	}
 
+	/* For scope functions, args were moved to parent CVs by ENTER_SCOPE_FUNC.
+	 * Read them from the parent's CV slots using the literal mapping. */
+	if (result_size && (EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)) {
+		SAVE_OPLINE();
+		zval *this_ptr = zend_closure_get_this_ptr_ptr(ZEND_CLOSURE_OBJECT(EX(func)));
+		zend_execute_data *parent_ed = (zend_execute_data *)Z_PTR_P(this_ptr);
+		uint32_t num_params = EX(func)->op_array.num_args;
+		/* Find ENTER_SCOPE_FUNC to get the literal mapping */
+		uint32_t first_literal = 0;
+		for (uint32_t j = 0; j < EX(func)->op_array.last; j++) {
+			if (EX(func)->op_array.opcodes[j].opcode == ZEND_ENTER_SCOPE_FUNC) {
+				first_literal = EX(func)->op_array.opcodes[j].op2.num;
+				break;
+			}
+		}
+		ht = zend_new_array(result_size);
+		ZVAL_ARR(EX_VAR(opline->result.var), ht);
+		zend_hash_real_init_packed(ht);
+		ZEND_HASH_FILL_PACKED(ht) {
+			uint32_t i = skip;
+			/* Declared params: read from parent CVs */
+			for (; i < arg_count && i < num_params; i++) {
+				uint32_t parent_cv_offset = (uint32_t)Z_LVAL(EX(func)->op_array.literals[first_literal + i]);
+				zval *q = ZEND_CALL_VAR(parent_ed, parent_cv_offset);
+				if (EXPECTED(Z_TYPE_INFO_P(q) != IS_UNDEF)) {
+					ZVAL_DEREF(q);
+					Z_TRY_ADDREF_P(q);
+					ZEND_HASH_FILL_SET(q);
+				} else {
+					ZEND_HASH_FILL_SET_NULL();
+				}
+				ZEND_HASH_FILL_NEXT();
+			}
+			/* Extra args: read from the original call frame (tagged ptr in extra_named_params) */
+			if (i < arg_count) {
+				zend_execute_data *call_frame = (zend_execute_data *)((uintptr_t)EX(extra_named_params) & ~(uintptr_t)1);
+				if (call_frame) {
+					zval *p = ZEND_CALL_VAR_NUM(call_frame,
+						call_frame->func->op_array.last_var + call_frame->func->op_array.T);
+					if (skip > num_params) {
+						p += (skip - num_params);
+					}
+					while (i < arg_count) {
+						zval *q = p;
+						if (EXPECTED(Z_TYPE_INFO_P(q) != IS_UNDEF)) {
+							ZVAL_DEREF(q);
+							Z_TRY_ADDREF_P(q);
+							ZEND_HASH_FILL_SET(q);
+						} else {
+							ZEND_HASH_FILL_SET_NULL();
+						}
+						ZEND_HASH_FILL_NEXT();
+						p++;
+						i++;
+					}
+				}
+			}
+		} ZEND_HASH_FILL_END();
+		ZEND_VM_NEXT_OPCODE_CHECK_EXCEPTION();
+	}
+
 	if (result_size) {
 		SAVE_OPLINE();
 		uint32_t first_extra_arg = EX(func)->op_array.num_args;
@@ -54078,10 +54262,15 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV  zend
 	SAVE_OPLINE();
 #endif
 
-	/* Scope function: don't free CVs, don't pop VM stack */
-	if (UNEXPECTED(EX(func) && EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)) {
+	/* Scope function: don't free CVs, don't pop VM stack for scope_ed itself.
+	 * We detect we're on scope_ed (not the initial call frame) by checking if
+	 * extra_named_params has the low bit set (tagged pointer from ENTER_SCOPE_FUNC). */
+	if (UNEXPECTED(EX(func) && (EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)
+	    && ((uintptr_t)EX(extra_named_params) & 1))) {
 		zend_object *closure_obj = ZEND_CLOSURE_OBJECT(EX(func));
 		zval *this_ptr = zend_closure_get_this_ptr_ptr(closure_obj);
+		/* Retrieve original call frame (clear the tag bit) */
+		zend_execute_data *original_call_frame = (zend_execute_data *)((uintptr_t)EX(extra_named_params) & ~(uintptr_t)1);
 
 		/* Clear recursion flag */
 		Z_EXTRA_P(this_ptr) = 0;
@@ -54091,9 +54280,44 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV  zend
 		/* Release the ZEND_CALL_CLOSURE ref (transferred from INIT_DYNAMIC_CALL) */
 		OBJ_RELEASE(closure_obj);
 
-		/* Do NOT free CVs — parent owns them */
-		/* Do NOT pop VM stack — scope_ed is in parent's frame */
+		/* Clean up any nested scope func tracking TMPs */
+		if (UNEXPECTED(ZEND_USER_CODE(EX(func)->type) && EX(func)->op_array.last_live_range)) {
+			for (uint32_t i = 0; i < EX(func)->op_array.last_live_range; i++) {
+				uint32_t kind = EX(func)->op_array.live_range[i].var & ZEND_LIVE_MASK;
+				if (kind == ZEND_LIVE_SCOPE_FUNC) {
+					uint32_t var_num = EX(func)->op_array.live_range[i].var & ~ZEND_LIVE_MASK;
+					zval *var = EX_VAR(var_num);
+					if (Z_TYPE_P(var) == IS_OBJECT) {
+						zval *tp = zend_closure_get_this_ptr_ptr(Z_OBJ_P(var));
+						Z_PTR_P(tp) = NULL;
+						OBJ_RELEASE(Z_OBJ_P(var));
+						ZVAL_UNDEF(var);
+					}
+				}
+			}
+		}
+
+		/* Do NOT free CVs — parent owns them. */
 		execute_data = EX(prev_execute_data);
+
+		if (UNEXPECTED(call_info & ZEND_CALL_TOP)) {
+			/* Called via zend_call_function: exit execute_ex.
+			 * The caller (zend_call_function) frees the original call frame. */
+			ZEND_VM_RETURN();
+		}
+
+		/* Standard VM path: pop the original call frame from the VM stack.
+		 * If there are extra args, free them first, then pop. */
+		if (original_call_frame) {
+			if (UNEXPECTED(ZEND_CALL_INFO(original_call_frame) & ZEND_CALL_FREE_EXTRA_ARGS)) {
+				zend_vm_stack_free_extra_args_ex(
+					ZEND_CALL_INFO(original_call_frame), original_call_frame);
+			}
+			if (UNEXPECTED(ZEND_CALL_INFO(original_call_frame) & ZEND_CALL_HAS_EXTRA_NAMED_PARAMS)) {
+				zend_free_extra_named_params(original_call_frame->extra_named_params);
+			}
+			EG(vm_stack_top) = (zval *)original_call_frame;
+		}
 
 		if (UNEXPECTED(EG(exception) != NULL)) {
 			zend_rethrow_exception(execute_data);
@@ -54108,8 +54332,12 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV  zend
 		EG(current_execute_data) = EX(prev_execute_data);
 		i_free_compiled_variables(execute_data);
 
-		/* Invalidate scope function tracking TMPs */
-		if (UNEXPECTED(ZEND_USER_CODE(EX(func)->type) && EX(func)->op_array.last_live_range)) {
+		/* Invalidate scope function tracking TMPs.
+		 * Only for non-scope-func parents — scope funcs have negative TMP offsets
+		 * that are only valid from scope_ed, not from the VM stack call frame. */
+		if (UNEXPECTED(ZEND_USER_CODE(EX(func)->type)
+		    && !(EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)
+		    && EX(func)->op_array.last_live_range)) {
 			for (uint32_t i = 0; i < EX(func)->op_array.last_live_range; i++) {
 				uint32_t kind = EX(func)->op_array.live_range[i].var & ZEND_LIVE_MASK;
 				if (kind == ZEND_LIVE_SCOPE_FUNC) {
@@ -54119,6 +54347,7 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV  zend
 						zval *tp = zend_closure_get_this_ptr_ptr(Z_OBJ_P(var));
 						Z_PTR_P(tp) = NULL;
 						OBJ_RELEASE(Z_OBJ_P(var));
+						ZVAL_UNDEF(var);
 					}
 				}
 			}
@@ -54146,8 +54375,12 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV  zend
 		EG(current_execute_data) = EX(prev_execute_data);
 		i_free_compiled_variables(execute_data);
 
-		/* Invalidate scope function tracking TMPs */
-		if (UNEXPECTED(ZEND_USER_CODE(EX(func)->type) && EX(func)->op_array.last_live_range)) {
+		/* Invalidate scope function tracking TMPs.
+		 * Only for non-scope-func parents — scope funcs have negative TMP offsets
+		 * that are only valid from scope_ed, not from the VM stack call frame. */
+		if (UNEXPECTED(ZEND_USER_CODE(EX(func)->type)
+		    && !(EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)
+		    && EX(func)->op_array.last_live_range)) {
 			for (uint32_t i = 0; i < EX(func)->op_array.last_live_range; i++) {
 				uint32_t kind = EX(func)->op_array.live_range[i].var & ZEND_LIVE_MASK;
 				if (kind == ZEND_LIVE_SCOPE_FUNC) {
@@ -54157,6 +54390,7 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV  zend
 						zval *tp = zend_closure_get_this_ptr_ptr(Z_OBJ_P(var));
 						Z_PTR_P(tp) = NULL;
 						OBJ_RELEASE(Z_OBJ_P(var));
+						ZVAL_UNDEF(var);
 					}
 				}
 			}
@@ -56904,8 +57138,10 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_ENTER_SCOPE_FUNC_S
 	zval *this_ptr = zend_closure_get_this_ptr_ptr(closure_obj);
 	zend_execute_data *parent_ed;
 	zend_execute_data *scope_ed;
+	zend_execute_data *call_frame = execute_data;
 	uint32_t num_params = opline->op1.num;
 	uint32_t scope_ed_offset = opline->extended_value;
+	uint32_t call_info = EX_CALL_INFO();
 
 	SAVE_OPLINE();
 
@@ -56925,15 +57161,14 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_ENTER_SCOPE_FUNC_S
 	/* Compute scope_ed from parent_ed + stored offset */
 	scope_ed = (zend_execute_data *)((char *)parent_ed + scope_ed_offset);
 
-	/* Copy args from call frame (positive offsets) to parent CVs */
+	/* Copy ALL params from call frame to parent CVs.
+	 * For args 0..num_args-1: passed values (from SEND).
+	 * For args num_args..num_params-1: default values (from RECV_INIT). */
 	if (num_params > 0) {
 		uint32_t first_literal = opline->op2.num;
-		uint32_t num_args = EX_NUM_ARGS();
-		uint32_t copy_count = MIN(num_args, num_params);
 		zval *literals = EX(func)->op_array.literals;
-		for (uint32_t i = 0; i < copy_count; i++) {
-			zval *src = ZEND_CALL_ARG(execute_data, i + 1);
-			/* Get parent CV offset from literal array */
+		for (uint32_t i = 0; i < num_params; i++) {
+			zval *src = ZEND_CALL_ARG(call_frame, i + 1);
 			uint32_t parent_cv_offset = (uint32_t)Z_LVAL(literals[first_literal + i]);
 			zval *dst = ZEND_CALL_VAR(parent_ed, parent_cv_offset);
 			zval_ptr_dtor(dst);
@@ -56950,11 +57185,14 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_ENTER_SCOPE_FUNC_S
 	scope_ed->prev_execute_data = EX(prev_execute_data); /* caller, not parent */
 	scope_ed->symbol_table = parent_ed->symbol_table;
 	scope_ed->run_time_cache = EX(run_time_cache);
-	scope_ed->extra_named_params = EX(extra_named_params);
+	/* Stash original call frame pointer for cleanup in leave_helper.
+	 * We repurpose extra_named_params since scope_ed doesn't need it.
+	 * Tag with low bit to distinguish from real zend_array pointers. */
+	scope_ed->extra_named_params = (zend_array *)((uintptr_t)call_frame | 1);
 
 	/* Copy This and call_info from current frame */
 	ZVAL_COPY_VALUE(&scope_ed->This, &EX(This));
-	ZEND_CALL_NUM_ARGS(scope_ed) = ZEND_CALL_NUM_ARGS(execute_data);
+	ZEND_CALL_NUM_ARGS(scope_ed) = ZEND_CALL_NUM_ARGS(call_frame);
 
 	/* Set recursion flag */
 	Z_EXTRA_P(this_ptr) = 1;
@@ -64733,6 +64971,67 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_FUNC_GET_ARGS_SPEC
 		result_size = arg_count;
 	}
 
+	/* For scope functions, args were moved to parent CVs by ENTER_SCOPE_FUNC.
+	 * Read them from the parent's CV slots using the literal mapping. */
+	if (result_size && (EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)) {
+		SAVE_OPLINE();
+		zval *this_ptr = zend_closure_get_this_ptr_ptr(ZEND_CLOSURE_OBJECT(EX(func)));
+		zend_execute_data *parent_ed = (zend_execute_data *)Z_PTR_P(this_ptr);
+		uint32_t num_params = EX(func)->op_array.num_args;
+		/* Find ENTER_SCOPE_FUNC to get the literal mapping */
+		uint32_t first_literal = 0;
+		for (uint32_t j = 0; j < EX(func)->op_array.last; j++) {
+			if (EX(func)->op_array.opcodes[j].opcode == ZEND_ENTER_SCOPE_FUNC) {
+				first_literal = EX(func)->op_array.opcodes[j].op2.num;
+				break;
+			}
+		}
+		ht = zend_new_array(result_size);
+		ZVAL_ARR(EX_VAR(opline->result.var), ht);
+		zend_hash_real_init_packed(ht);
+		ZEND_HASH_FILL_PACKED(ht) {
+			uint32_t i = skip;
+			/* Declared params: read from parent CVs */
+			for (; i < arg_count && i < num_params; i++) {
+				uint32_t parent_cv_offset = (uint32_t)Z_LVAL(EX(func)->op_array.literals[first_literal + i]);
+				zval *q = ZEND_CALL_VAR(parent_ed, parent_cv_offset);
+				if (EXPECTED(Z_TYPE_INFO_P(q) != IS_UNDEF)) {
+					ZVAL_DEREF(q);
+					Z_TRY_ADDREF_P(q);
+					ZEND_HASH_FILL_SET(q);
+				} else {
+					ZEND_HASH_FILL_SET_NULL();
+				}
+				ZEND_HASH_FILL_NEXT();
+			}
+			/* Extra args: read from the original call frame (tagged ptr in extra_named_params) */
+			if (i < arg_count) {
+				zend_execute_data *call_frame = (zend_execute_data *)((uintptr_t)EX(extra_named_params) & ~(uintptr_t)1);
+				if (call_frame) {
+					zval *p = ZEND_CALL_VAR_NUM(call_frame,
+						call_frame->func->op_array.last_var + call_frame->func->op_array.T);
+					if (skip > num_params) {
+						p += (skip - num_params);
+					}
+					while (i < arg_count) {
+						zval *q = p;
+						if (EXPECTED(Z_TYPE_INFO_P(q) != IS_UNDEF)) {
+							ZVAL_DEREF(q);
+							Z_TRY_ADDREF_P(q);
+							ZEND_HASH_FILL_SET(q);
+						} else {
+							ZEND_HASH_FILL_SET_NULL();
+						}
+						ZEND_HASH_FILL_NEXT();
+						p++;
+						i++;
+					}
+				}
+			}
+		} ZEND_HASH_FILL_END();
+		ZEND_VM_NEXT_OPCODE_CHECK_EXCEPTION();
+	}
+
 	if (result_size) {
 		SAVE_OPLINE();
 		uint32_t first_extra_arg = EX(func)->op_array.num_args;
@@ -71127,10 +71426,18 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_DECLARE_SCOPE_FUNC
 	zend_create_closure(EX_VAR(opline->result.var), func,
 		EX(func)->op_array.scope, called_scope, object);
 
-	/* Store parent_execute_data and recursion flag in closure's this_ptr */
+	/* Store top-level parent_execute_data and recursion flag in closure's this_ptr.
+	 * For nested scope funcs (DECLARE runs inside another scope func), follow
+	 * the chain to the top-level parent where all CVs reside. */
 	{
 		zval *this_ptr = zend_closure_get_this_ptr_ptr(Z_OBJ_P(EX_VAR(opline->result.var)));
-		Z_PTR_P(this_ptr) = execute_data;
+		zend_execute_data *parent = execute_data;
+		if (EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
+			/* We're inside a scope func — get the top-level parent from our own closure */
+			zval *our_this_ptr = zend_closure_get_this_ptr_ptr(ZEND_CLOSURE_OBJECT(EX(func)));
+			parent = (zend_execute_data *)Z_PTR_P(our_this_ptr);
+		}
+		Z_PTR_P(this_ptr) = parent;
 		Z_EXTRA_P(this_ptr) = 0;
 		Z_TYPE_INFO_P(this_ptr) = IS_PTR;
 	}
@@ -90171,6 +90478,67 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_FUNC_GET_ARGS_SPEC
 	} else {
 		skip = 0;
 		result_size = arg_count;
+	}
+
+	/* For scope functions, args were moved to parent CVs by ENTER_SCOPE_FUNC.
+	 * Read them from the parent's CV slots using the literal mapping. */
+	if (result_size && (EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)) {
+		SAVE_OPLINE();
+		zval *this_ptr = zend_closure_get_this_ptr_ptr(ZEND_CLOSURE_OBJECT(EX(func)));
+		zend_execute_data *parent_ed = (zend_execute_data *)Z_PTR_P(this_ptr);
+		uint32_t num_params = EX(func)->op_array.num_args;
+		/* Find ENTER_SCOPE_FUNC to get the literal mapping */
+		uint32_t first_literal = 0;
+		for (uint32_t j = 0; j < EX(func)->op_array.last; j++) {
+			if (EX(func)->op_array.opcodes[j].opcode == ZEND_ENTER_SCOPE_FUNC) {
+				first_literal = EX(func)->op_array.opcodes[j].op2.num;
+				break;
+			}
+		}
+		ht = zend_new_array(result_size);
+		ZVAL_ARR(EX_VAR(opline->result.var), ht);
+		zend_hash_real_init_packed(ht);
+		ZEND_HASH_FILL_PACKED(ht) {
+			uint32_t i = skip;
+			/* Declared params: read from parent CVs */
+			for (; i < arg_count && i < num_params; i++) {
+				uint32_t parent_cv_offset = (uint32_t)Z_LVAL(EX(func)->op_array.literals[first_literal + i]);
+				zval *q = ZEND_CALL_VAR(parent_ed, parent_cv_offset);
+				if (EXPECTED(Z_TYPE_INFO_P(q) != IS_UNDEF)) {
+					ZVAL_DEREF(q);
+					Z_TRY_ADDREF_P(q);
+					ZEND_HASH_FILL_SET(q);
+				} else {
+					ZEND_HASH_FILL_SET_NULL();
+				}
+				ZEND_HASH_FILL_NEXT();
+			}
+			/* Extra args: read from the original call frame (tagged ptr in extra_named_params) */
+			if (i < arg_count) {
+				zend_execute_data *call_frame = (zend_execute_data *)((uintptr_t)EX(extra_named_params) & ~(uintptr_t)1);
+				if (call_frame) {
+					zval *p = ZEND_CALL_VAR_NUM(call_frame,
+						call_frame->func->op_array.last_var + call_frame->func->op_array.T);
+					if (skip > num_params) {
+						p += (skip - num_params);
+					}
+					while (i < arg_count) {
+						zval *q = p;
+						if (EXPECTED(Z_TYPE_INFO_P(q) != IS_UNDEF)) {
+							ZVAL_DEREF(q);
+							Z_TRY_ADDREF_P(q);
+							ZEND_HASH_FILL_SET(q);
+						} else {
+							ZEND_HASH_FILL_SET_NULL();
+						}
+						ZEND_HASH_FILL_NEXT();
+						p++;
+						i++;
+					}
+				}
+			}
+		} ZEND_HASH_FILL_END();
+		ZEND_VM_NEXT_OPCODE_CHECK_EXCEPTION();
 	}
 
 	if (result_size) {
@@ -110550,10 +110918,15 @@ zend_leave_helper_SPEC_LABEL:
 	SAVE_OPLINE();
 #endif
 
-	/* Scope function: don't free CVs, don't pop VM stack */
-	if (UNEXPECTED(EX(func) && EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)) {
+	/* Scope function: don't free CVs, don't pop VM stack for scope_ed itself.
+	 * We detect we're on scope_ed (not the initial call frame) by checking if
+	 * extra_named_params has the low bit set (tagged pointer from ENTER_SCOPE_FUNC). */
+	if (UNEXPECTED(EX(func) && (EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)
+	    && ((uintptr_t)EX(extra_named_params) & 1))) {
 		zend_object *closure_obj = ZEND_CLOSURE_OBJECT(EX(func));
 		zval *this_ptr = zend_closure_get_this_ptr_ptr(closure_obj);
+		/* Retrieve original call frame (clear the tag bit) */
+		zend_execute_data *original_call_frame = (zend_execute_data *)((uintptr_t)EX(extra_named_params) & ~(uintptr_t)1);
 
 		/* Clear recursion flag */
 		Z_EXTRA_P(this_ptr) = 0;
@@ -110563,9 +110936,44 @@ zend_leave_helper_SPEC_LABEL:
 		/* Release the ZEND_CALL_CLOSURE ref (transferred from INIT_DYNAMIC_CALL) */
 		OBJ_RELEASE(closure_obj);
 
-		/* Do NOT free CVs — parent owns them */
-		/* Do NOT pop VM stack — scope_ed is in parent's frame */
+		/* Clean up any nested scope func tracking TMPs */
+		if (UNEXPECTED(ZEND_USER_CODE(EX(func)->type) && EX(func)->op_array.last_live_range)) {
+			for (uint32_t i = 0; i < EX(func)->op_array.last_live_range; i++) {
+				uint32_t kind = EX(func)->op_array.live_range[i].var & ZEND_LIVE_MASK;
+				if (kind == ZEND_LIVE_SCOPE_FUNC) {
+					uint32_t var_num = EX(func)->op_array.live_range[i].var & ~ZEND_LIVE_MASK;
+					zval *var = EX_VAR(var_num);
+					if (Z_TYPE_P(var) == IS_OBJECT) {
+						zval *tp = zend_closure_get_this_ptr_ptr(Z_OBJ_P(var));
+						Z_PTR_P(tp) = NULL;
+						OBJ_RELEASE(Z_OBJ_P(var));
+						ZVAL_UNDEF(var);
+					}
+				}
+			}
+		}
+
+		/* Do NOT free CVs — parent owns them. */
 		execute_data = EX(prev_execute_data);
+
+		if (UNEXPECTED(call_info & ZEND_CALL_TOP)) {
+			/* Called via zend_call_function: exit execute_ex.
+			 * The caller (zend_call_function) frees the original call frame. */
+			ZEND_VM_RETURN();
+		}
+
+		/* Standard VM path: pop the original call frame from the VM stack.
+		 * If there are extra args, free them first, then pop. */
+		if (original_call_frame) {
+			if (UNEXPECTED(ZEND_CALL_INFO(original_call_frame) & ZEND_CALL_FREE_EXTRA_ARGS)) {
+				zend_vm_stack_free_extra_args_ex(
+					ZEND_CALL_INFO(original_call_frame), original_call_frame);
+			}
+			if (UNEXPECTED(ZEND_CALL_INFO(original_call_frame) & ZEND_CALL_HAS_EXTRA_NAMED_PARAMS)) {
+				zend_free_extra_named_params(original_call_frame->extra_named_params);
+			}
+			EG(vm_stack_top) = (zval *)original_call_frame;
+		}
 
 		if (UNEXPECTED(EG(exception) != NULL)) {
 			zend_rethrow_exception(execute_data);
@@ -110580,8 +110988,12 @@ zend_leave_helper_SPEC_LABEL:
 		EG(current_execute_data) = EX(prev_execute_data);
 		i_free_compiled_variables(execute_data);
 
-		/* Invalidate scope function tracking TMPs */
-		if (UNEXPECTED(ZEND_USER_CODE(EX(func)->type) && EX(func)->op_array.last_live_range)) {
+		/* Invalidate scope function tracking TMPs.
+		 * Only for non-scope-func parents — scope funcs have negative TMP offsets
+		 * that are only valid from scope_ed, not from the VM stack call frame. */
+		if (UNEXPECTED(ZEND_USER_CODE(EX(func)->type)
+		    && !(EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)
+		    && EX(func)->op_array.last_live_range)) {
 			for (uint32_t i = 0; i < EX(func)->op_array.last_live_range; i++) {
 				uint32_t kind = EX(func)->op_array.live_range[i].var & ZEND_LIVE_MASK;
 				if (kind == ZEND_LIVE_SCOPE_FUNC) {
@@ -110591,6 +111003,7 @@ zend_leave_helper_SPEC_LABEL:
 						zval *tp = zend_closure_get_this_ptr_ptr(Z_OBJ_P(var));
 						Z_PTR_P(tp) = NULL;
 						OBJ_RELEASE(Z_OBJ_P(var));
+						ZVAL_UNDEF(var);
 					}
 				}
 			}
@@ -110618,8 +111031,12 @@ zend_leave_helper_SPEC_LABEL:
 		EG(current_execute_data) = EX(prev_execute_data);
 		i_free_compiled_variables(execute_data);
 
-		/* Invalidate scope function tracking TMPs */
-		if (UNEXPECTED(ZEND_USER_CODE(EX(func)->type) && EX(func)->op_array.last_live_range)) {
+		/* Invalidate scope function tracking TMPs.
+		 * Only for non-scope-func parents — scope funcs have negative TMP offsets
+		 * that are only valid from scope_ed, not from the VM stack call frame. */
+		if (UNEXPECTED(ZEND_USER_CODE(EX(func)->type)
+		    && !(EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)
+		    && EX(func)->op_array.last_live_range)) {
 			for (uint32_t i = 0; i < EX(func)->op_array.last_live_range; i++) {
 				uint32_t kind = EX(func)->op_array.live_range[i].var & ZEND_LIVE_MASK;
 				if (kind == ZEND_LIVE_SCOPE_FUNC) {
@@ -110629,6 +111046,7 @@ zend_leave_helper_SPEC_LABEL:
 						zval *tp = zend_closure_get_this_ptr_ptr(Z_OBJ_P(var));
 						Z_PTR_P(tp) = NULL;
 						OBJ_RELEASE(Z_OBJ_P(var));
+						ZVAL_UNDEF(var);
 					}
 				}
 			}

@@ -1,7 +1,5 @@
 --TEST--
 Scope function passed as callback to array_map
---XFAIL--
-Multiple calls via zend_call_function: old call frame on VM stack not cleaned up
 --FILE--
 <?php
 function test() {

@@ -1,7 +1,5 @@
 --TEST--
 Scope function closure cannot be cloned
---XFAIL--
-GC assertion failure after clone error in debug builds
 --FILE--
 <?php
 function test() {

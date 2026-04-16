@@ -1,7 +1,5 @@
 --TEST--
 Scope function with default parameter values
---XFAIL--
-Default params crash: RECV_INIT skip logic interacts with ENTER_SCOPE_FUNC
 --FILE--
 <?php
 function test() {

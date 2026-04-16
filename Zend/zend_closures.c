@@ -599,6 +599,10 @@ static zend_object *zend_closure_clone(zend_object *zobject) /* {{{ */
 
 	if (closure->func.common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
 		zend_throw_error(NULL, "Cannot clone a scope function closure");
+		/* Return the original with an extra ref — the ZEND_CLONE handler
+		 * expects clone_obj to return an object with its own reference.
+		 * The exception handler will release it. */
+		GC_ADDREF(zobject);
 		return zobject;
 	}
 
@@ -728,8 +732,14 @@ static HashTable *zend_closure_get_gc(zend_object *obj, zval **table, int *n) /*
 {
 	zend_closure *closure = (zend_closure *)obj;
 
-	*table = Z_TYPE(closure->this_ptr) != IS_NULL ? &closure->this_ptr : NULL;
-	*n = Z_TYPE(closure->this_ptr) != IS_NULL ? 1 : 0;
+	/* For scope functions, this_ptr is IS_PTR (not a GC-traceable zval) */
+	if (Z_TYPE(closure->this_ptr) == IS_OBJECT) {
+		*table = &closure->this_ptr;
+		*n = 1;
+	} else {
+		*table = NULL;
+		*n = 0;
+	}
 	/* Fake closures don't own the static variables they reference. */
 	return (closure->func.type == ZEND_USER_FUNCTION
 			&& !(closure->func.op_array.fn_flags & ZEND_ACC_FAKE_CLOSURE)) ?

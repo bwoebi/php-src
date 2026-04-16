@@ -8984,16 +8984,21 @@ static zend_op_array *zend_compile_func_decl_ex(
 			zend_error_noreturn(E_COMPILE_ERROR, "Scope functions cannot be generators");
 		}
 
-		/* Register scope func params in parent's CV table and record mapping.
+		/* Register scope func params in top-level parent's CV table and record mapping.
 		 * At this point, the scope func's own CV table has params at indices 0..num_args-1.
-		 * We need to also register them in the parent's CV table. */
+		 * We need to also register them in the top-level parent's CV table.
+		 * For nested scope funcs, follow the chain to the top-level parent. */
+		zend_op_array *toplevel_parent = orig_op_array;
+		if (CG(context).prev && CG(context).prev->scope_func_parent_op_array) {
+			toplevel_parent = CG(context).prev->scope_func_parent_op_array;
+		}
 		uint32_t num_params = op_array->last_var;
 		uint32_t *param_parent_cv_offsets = NULL;
 		if (num_params > 0) {
 			param_parent_cv_offsets = safe_emalloc(num_params, sizeof(uint32_t), 0);
 			for (uint32_t i = 0; i < num_params; i++) {
-				/* Look up in parent — this creates the CV if it doesn't exist */
-				zend_op_array *parent = orig_op_array;
+				/* Look up in top-level parent — this creates the CV if it doesn't exist */
+				zend_op_array *parent = toplevel_parent;
 				zend_ulong hash_value = zend_string_hash_val(op_array->vars[i]);
 				uint32_t parent_cv = (uint32_t)-1;
 				for (int j = 0; j < parent->last_var; j++) {
@@ -9038,8 +9043,15 @@ static zend_op_array *zend_compile_func_decl_ex(
 			efree(param_parent_cv_offsets);
 		}
 
-		/* Enable shared CV lookup for the body compilation */
-		CG(context).scope_func_parent_op_array = orig_op_array;
+		/* Enable shared CV lookup for the body compilation.
+		 * For nested scope funcs, chain to the top-level parent
+		 * (which may already be set from an outer scope func). */
+		if (CG(context).prev && CG(context).prev->scope_func_parent_op_array) {
+			/* Nested scope func: use the same top-level parent */
+			CG(context).scope_func_parent_op_array = CG(context).prev->scope_func_parent_op_array;
+		} else {
+			CG(context).scope_func_parent_op_array = orig_op_array;
+		}
 	}
 
 	if (ast->kind == ZEND_AST_ARROW_FUNC && decl->child[2]->kind != ZEND_AST_RETURN) {
@@ -9101,7 +9113,9 @@ static zend_op_array *zend_compile_func_decl_ex(
 	pass_two(CG(active_op_array));
 
 	/* After pass_two: fix up scope function children's offsets.
-	 * At this point, the current op_array's last_var is final. */
+	 * Only do this for non-scope-func parents. Scope func children are
+	 * fixed recursively from the top-level parent's fixup. */
+	if (!(CG(active_op_array)->fn_flags2 & ZEND_ACC2_SCOPE_FUNC))
 	for (uint32_t i = 0; i < CG(active_op_array)->num_dynamic_func_defs; i++) {
 		zend_op_array *child = CG(active_op_array)->dynamic_func_defs[i];
 		if (child->fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {

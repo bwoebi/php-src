@@ -4962,12 +4962,17 @@ static void cleanup_live_vars(zend_execute_data *execute_data, uint32_t op_num, 
 						EG(error_reporting) = Z_LVAL_P(var);
 					}
 				} else if (kind == ZEND_LIVE_SCOPE_FUNC) {
-					/* Invalidate scope function closure on parent exit */
-					if (Z_TYPE_P(var) == IS_OBJECT) {
-						zval *this_ptr = zend_closure_get_this_ptr_ptr(Z_OBJ_P(var));
-						Z_PTR_P(this_ptr) = NULL; /* invalidate */
-						OBJ_RELEASE(Z_OBJ_P(var));
-						ZVAL_UNDEF(var);
+					/* Invalidate scope function closure on parent exit.
+					 * Skip if we're on a scope func's call frame (not scope_ed):
+					 * the negative TMP offsets are invalid from the call frame. */
+					if (!(EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)
+					    || ((uintptr_t)EX(extra_named_params) & 1)) {
+						if (Z_TYPE_P(var) == IS_OBJECT) {
+							zval *this_ptr = zend_closure_get_this_ptr_ptr(Z_OBJ_P(var));
+							Z_PTR_P(this_ptr) = NULL; /* invalidate */
+							OBJ_RELEASE(Z_OBJ_P(var));
+							ZVAL_UNDEF(var);
+						}
 					}
 				}
 			}
