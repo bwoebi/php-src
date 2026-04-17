@@ -8730,10 +8730,7 @@ static zend_string *zend_begin_func_decl(znode *result, zend_op_array *op_array,
 		case FUNC_DECL_LEVEL_NESTED: {
 			uint32_t func_ref = zend_add_dynamic_func_def(op_array);
 			if (op_array->fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
-				uint32_t tracking_tmp = get_temporary_variable();
 				opline = zend_emit_op_tmp(result, ZEND_DECLARE_SCOPE_FUNC, NULL, NULL);
-				opline->op1_type = IS_TMP_VAR;
-				opline->op1.var = tracking_tmp;
 				opline->op2.num = func_ref;
 				/* extended_value (T_base) will be filled after scope func compilation */
 			} else if (op_array->fn_flags & ZEND_ACC_CLOSURE) {

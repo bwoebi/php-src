@@ -166,6 +166,8 @@ ZEND_API void zend_generator_close(zend_generator *generator, bool finished_exec
 			zend_generator_cleanup_unfinished_execution(generator, execute_data, 0);
 		}
 
+		zend_vm_stack_free_tracked_temporaries(EX_CALL_INFO(), execute_data);
+
 		efree(execute_data);
 	}
 }

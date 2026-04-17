@@ -379,18 +379,44 @@ static zend_always_inline zend_execute_data *zend_vm_stack_push_call_frame(uint3
 static zend_always_inline void zend_vm_stack_free_extra_args_ex(uint32_t call_info, zend_execute_data *call)
 {
 	if (UNEXPECTED(call_info & ZEND_CALL_FREE_EXTRA_ARGS)) {
+		/* Guard: ZEND_CALL_FREE_EXTRA_ARGS is shared with ZEND_CALL_TRACKED_TEMPORARIES.
+		 * The flag may be set for tracked TMPs without actual extra args. */
 		uint32_t count = ZEND_CALL_NUM_ARGS(call) - call->func->op_array.num_args;
-		zval *p = ZEND_CALL_VAR_NUM(call, call->func->op_array.last_var + call->func->op_array.T);
-		do {
-			i_zval_ptr_dtor(p);
-			p++;
-		} while (--count);
+		if (EXPECTED(count > 0)) {
+			zval *p = ZEND_CALL_VAR_NUM(call, call->func->op_array.last_var + call->func->op_array.T);
+			do {
+				i_zval_ptr_dtor(p);
+				p++;
+			} while (--count);
+		}
  	}
 }
 
 static zend_always_inline void zend_vm_stack_free_extra_args(zend_execute_data *call)
 {
 	zend_vm_stack_free_extra_args_ex(ZEND_CALL_INFO(call), call);
+}
+
+/* Tracked temporaries: a backwards-growing array at the end of the TMP space.
+ * Used for cleanup of scope function closures at parent exit.
+ *
+ * Layout: TMP[T-1] = base entry (Z_EXTRA high 24 bits = count),
+ *         TMP[T-2..] = entries (Z_EXTRA low 8 bits = mode).
+ * Mode: 0=nop, 1=free, 2=scope_func cleanup.
+ *
+ * Guarded by ZEND_CALL_TRACKED_TEMPORARIES flag (shared with ZEND_CALL_FREE_EXTRA_ARGS)
+ * and ZEND_ACC2_HAS_TRACKED_TEMPORARIES in fn_flags2. */
+#define ZEND_TRACKED_TMP_NOP        0
+#define ZEND_TRACKED_TMP_FREE       1
+#define ZEND_TRACKED_TMP_SCOPE_FUNC 2
+
+ZEND_API void zend_vm_stack_free_tracked_temporaries_ex(zend_execute_data *execute_data);
+
+static zend_always_inline void zend_vm_stack_free_tracked_temporaries(uint32_t call_info, zend_execute_data *execute_data)
+{
+	if (UNEXPECTED((call_info & ZEND_CALL_TRACKED_TEMPORARIES) != 0) && ZEND_USER_CODE(EX(func)->type) && (EX(func)->op_array.fn_flags2 & ZEND_ACC2_HAS_TRACKED_TEMPORARIES)) {
+		zend_vm_stack_free_tracked_temporaries_ex(execute_data);
+	}
 }
 
 static zend_always_inline void zend_vm_stack_free_args(zend_execute_data *call)

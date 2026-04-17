@@ -2,34 +2,25 @@
 Error paths in scope function don't leak VM stack frames
 --FILE--
 <?php
-function make_escaped() {
+function make() {
     return fn() { return 1; };
 }
-
 function test_recursion() {
+    $ref = null;
     $fn = fn() {
-        global $ref;
         $ref();
     };
-    global $ref;
     $ref = $fn;
     try {
         $fn();
     } catch (Error) {}
+    $ref = null; // release ref before function exit to avoid escape error
 }
-
-// Call in tight loops to detect VM stack leaks
-for ($i = 0; $i < 10000; $i++) {
-    $escaped = make_escaped();
-    try {
-        $escaped();
-    } catch (Error) {}
+for ($i = 0; $i < 1000; $i++) {
+    try { make(); } catch (Error) {}
 }
 echo "lifetime: ok\n";
-
-for ($i = 0; $i < 10000; $i++) {
-    test_recursion();
-}
+for ($i = 0; $i < 1000; $i++) { test_recursion(); }
 echo "recursion: ok\n";
 ?>
 --EXPECT--

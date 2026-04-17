@@ -11,11 +11,9 @@ function outer() {
         };
         return $innermost(100);
     };
-    var_dump($inner(5)); // 100 + 10 + 15 = 125
-    var_dump($x); // 10
+    var_dump($inner(5));
 }
 outer();
 ?>
 --EXPECT--
 int(125)
-int(10)

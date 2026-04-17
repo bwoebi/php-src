@@ -8,10 +8,9 @@ function test() {
         $fn = fn() { return $i; };
         $closures[] = $fn;
     }
-    // Only the last closure should be valid
+    // Latest closure works
     var_dump($closures[2]());
-
-    // Earlier closures should be invalidated
+    // Earlier closures were invalidated by re-evaluation
     try {
         $closures[0]();
     } catch (Error $e) {

@@ -4,11 +4,7 @@ Variable variables inside scope function access parent scope
 <?php
 function test() {
     $x = 42;
-    $name = "x";
-    $fn = fn() {
-        $name = "x";
-        return $$name;
-    };
+    $fn = fn() { $name = "x"; return $$name; };
     var_dump($fn());
 }
 test();

@@ -13,8 +13,7 @@ test_compact();
 function test_extract() {
     $fn = fn() { extract(['x' => 10, 'y' => 20]); };
     $fn();
-    var_dump($x);
-    var_dump($y);
+    var_dump($x, $y);
 }
 test_extract();
 ?>

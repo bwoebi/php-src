@@ -3,12 +3,7 @@ Scope function throws on recursive call
 --FILE--
 <?php
 function test() {
-    $fn = fn() {
-        global $ref;
-        $ref();
-    };
-    global $ref;
-    $ref = $fn;
+    $fn = fn() { $fn(); };
     try {
         $fn();
     } catch (Error $e) {

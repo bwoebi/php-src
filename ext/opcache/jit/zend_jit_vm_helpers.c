@@ -56,6 +56,7 @@ ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV zend_jit_leave_func_helper_tai
 		}
 
 		zend_vm_stack_free_extra_args_ex(call_info, execute_data);
+		zend_vm_stack_free_tracked_temporaries(call_info, execute_data);
 		if (UNEXPECTED(call_info & ZEND_CALL_RELEASE_THIS)) {
 			OBJ_RELEASE(Z_OBJ(execute_data->This));
 		} else if (UNEXPECTED(call_info & ZEND_CALL_CLOSURE)) {
@@ -87,6 +88,7 @@ ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV zend_jit_leave_func_helper_tai
 			}
 			zend_vm_stack_free_extra_args_ex(call_info, execute_data);
 		}
+		zend_vm_stack_free_tracked_temporaries(call_info, execute_data);
 		if (UNEXPECTED(call_info & ZEND_CALL_HAS_EXTRA_NAMED_PARAMS)) {
 			zend_free_extra_named_params(EX(extra_named_params));
 		}
@@ -107,6 +109,7 @@ ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL zend_jit_leave_nested_func_helper(ZEND_OPC
 	}
 
 	zend_vm_stack_free_extra_args_ex(call_info, execute_data);
+	zend_vm_stack_free_tracked_temporaries(call_info, execute_data);
 	if (UNEXPECTED(call_info & ZEND_CALL_RELEASE_THIS)) {
 		OBJ_RELEASE(Z_OBJ(execute_data->This));
 	} else if (UNEXPECTED(call_info & ZEND_CALL_CLOSURE)) {
@@ -148,6 +151,7 @@ ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL zend_jit_leave_top_func_helper(ZEND_OPCODE
 			zend_clean_and_cache_symbol_table(EX(symbol_table));
 		}
 		zend_vm_stack_free_extra_args_ex(call_info, execute_data);
+		zend_vm_stack_free_tracked_temporaries(call_info, execute_data);
 	}
 	if (UNEXPECTED(call_info & ZEND_CALL_HAS_EXTRA_NAMED_PARAMS)) {
 		zend_free_extra_named_params(EX(extra_named_params));

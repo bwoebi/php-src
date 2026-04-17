@@ -1,16 +1,15 @@
 --TEST--
-Scope function throws when called after defining scope exits
+Scope function throws when escaping the declaring scope
 --FILE--
 <?php
-function make_scope_fn() {
+function make() {
     return fn() { return 1; };
 }
-$escaped = make_scope_fn();
 try {
-    $escaped();
+    $escaped = make();
 } catch (Error $e) {
     echo $e->getMessage() . "\n";
 }
 ?>
 --EXPECT--
-Cannot call scope function: defining scope has exited
+Scope function closure must not outlive the declaring scope

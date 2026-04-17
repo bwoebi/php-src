@@ -4399,11 +4399,17 @@ static zend_never_inline void zend_copy_extra_args(EXECUTE_DATA_D)
 		} while (--count);
 		if (Z_TYPE_INFO_REFCOUNTED(type_flags)) {
 			ZEND_ADD_CALL_FLAG(execute_data, ZEND_CALL_FREE_EXTRA_ARGS);
+			if (UNEXPECTED(op_array->fn_flags2 & ZEND_ACC2_HAS_TRACKED_TEMPORARIES)) {
+				Z_EXTRA_P(ZEND_CALL_VAR_NUM(execute_data, op_array->last_var + op_array->T - 1)) = 0;
+			}
 		}
 	} else {
 		do {
 			if (Z_REFCOUNTED_P(src)) {
 				ZEND_ADD_CALL_FLAG(execute_data, ZEND_CALL_FREE_EXTRA_ARGS);
+				if (UNEXPECTED(op_array->fn_flags2 & ZEND_ACC2_HAS_TRACKED_TEMPORARIES)) {
+					Z_EXTRA_P(ZEND_CALL_VAR_NUM(execute_data, op_array->last_var + op_array->T - 1)) = 0;
+				}
 				break;
 			}
 			src--;
@@ -4961,19 +4967,6 @@ static void cleanup_live_vars(zend_execute_data *execute_data, uint32_t op_num, 
 							&& !E_HAS_ONLY_FATAL_ERRORS(Z_LVAL_P(var))) {
 						EG(error_reporting) = Z_LVAL_P(var);
 					}
-				} else if (kind == ZEND_LIVE_SCOPE_FUNC) {
-					/* Invalidate scope function closure on parent exit.
-					 * Skip if we're on a scope func's call frame (not scope_ed):
-					 * the negative TMP offsets are invalid from the call frame. */
-					if (!(EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)
-					    || ((uintptr_t)EX(extra_named_params) & 1)) {
-						if (Z_TYPE_P(var) == IS_OBJECT) {
-							zval *this_ptr = zend_closure_get_this_ptr_ptr(Z_OBJ_P(var));
-							Z_PTR_P(this_ptr) = NULL; /* invalidate */
-							OBJ_RELEASE(Z_OBJ_P(var));
-							ZVAL_UNDEF(var);
-						}
-					}
 				}
 			}
 		}
@@ -4984,6 +4977,38 @@ static void cleanup_live_vars(zend_execute_data *execute_data, uint32_t op_num, 
 ZEND_API void zend_cleanup_unfinished_execution(zend_execute_data *execute_data, uint32_t op_num, uint32_t catch_op_num) {
 	cleanup_unfinished_calls(execute_data, op_num);
 	cleanup_live_vars(execute_data, op_num, catch_op_num);
+}
+
+ZEND_API void zend_vm_stack_free_tracked_temporaries_ex(zend_execute_data *call)
+{
+	const zend_op_array *op_array = &call->func->op_array;
+	zval *base = ZEND_CALL_VAR_NUM(call, op_array->last_var + op_array->T - 1);
+	uint32_t count = Z_EXTRA_P(base) >> 8;
+
+	for (uint32_t i = 0; i < count; i++) {
+		zval *entry = base - i - 1;
+		uint8_t mode = Z_EXTRA_P(entry) & 0xFF;
+
+		switch (mode) {
+			case ZEND_TRACKED_TMP_SCOPE_FUNC: {
+				zval *tmp = zend_closure_get_this_ptr_ptr(Z_OBJ_P(entry));
+				bool escaped = GC_REFCOUNT(Z_OBJ_P(entry)) > 1;
+				Z_PTR_P(tmp) = NULL; /* invalidate */
+				OBJ_RELEASE(Z_OBJ_P(entry));
+				if (escaped) {
+					zend_throw_error(NULL,
+						"Scope function closure must not outlive the declaring scope");
+				}
+				break;
+			}
+			case ZEND_TRACKED_TMP_FREE:
+				zval_ptr_dtor(entry);
+				break;
+			case ZEND_TRACKED_TMP_NOP:
+			default:
+				break;
+		}
+	}
 }
 
 ZEND_API ZEND_ATTRIBUTE_DEPRECATED HashTable *zend_unfinished_execution_gc(zend_execute_data *execute_data, zend_execute_data *call, zend_get_gc_buffer *gc_buffer)
@@ -5022,7 +5047,7 @@ ZEND_API HashTable *zend_unfinished_execution_gc_ex(zend_execute_data *execute_d
 	if (EX_CALL_INFO() & ZEND_CALL_FREE_EXTRA_ARGS) {
 		zval *zv = EX_VAR_NUM(op_array->last_var + op_array->T);
 		const zval *end = zv + (EX_NUM_ARGS() - op_array->num_args);
-		while (zv != end) {
+		while (zv < end) {
 			zend_get_gc_buffer_add_zval(gc_buffer, zv++);
 		}
 	}

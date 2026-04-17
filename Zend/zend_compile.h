@@ -417,7 +417,8 @@ typedef struct _zend_oparray_context {
 /* Function Flags 2 (fn_flags2) (unused: 0-31)            |     |     |     */
 /* ============================                           |     |     |     */
 /*                                                        |     |     |     */
-#define ZEND_ACC2_SCOPE_FUNC            (1 << 0)  /*     |  X  |     |     */
+#define ZEND_ACC2_SCOPE_FUNC              (1 << 0) /*     |  X  |     |     */
+#define ZEND_ACC2_HAS_TRACKED_TEMPORARIES (1 << 1) /*     |  X  |     |     */
 
 #define ZEND_ACC_PPP_MASK  (ZEND_ACC_PUBLIC | ZEND_ACC_PROTECTED | ZEND_ACC_PRIVATE)
 #define ZEND_ACC_PPP_SET_MASK  (ZEND_ACC_PUBLIC_SET | ZEND_ACC_PROTECTED_SET | ZEND_ACC_PRIVATE_SET)
@@ -664,6 +665,7 @@ struct _zend_execute_data {
 #define ZEND_CALL_TOP                (1 << 17)
 #define ZEND_CALL_ALLOCATED          (1 << 18)
 #define ZEND_CALL_FREE_EXTRA_ARGS    (1 << 19)
+#define ZEND_CALL_TRACKED_TEMPORARIES ZEND_CALL_FREE_EXTRA_ARGS /* shared: extra args OR tracked TMPs */
 #define ZEND_CALL_HAS_SYMBOL_TABLE   (1 << 20)
 #define ZEND_CALL_RELEASE_THIS       (1 << 21)
 #define ZEND_CALL_CLOSURE            (1 << 22)

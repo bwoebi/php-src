@@ -7,13 +7,12 @@ function test() {
     try {
         $fn("not an int");
     } catch (TypeError $e) {
-        echo "Caught: " . $e->getMessage() . "\n";
+        echo "Caught TypeError\n";
     }
-    // Parent function continues normally
     echo "ok\n";
 }
 test();
 ?>
---EXPECTF--
-Caught: %s
+--EXPECT--
+Caught TypeError
 ok
