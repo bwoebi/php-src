@@ -8966,7 +8966,11 @@ static zend_op_array *zend_compile_func_decl_ex(
 		is_method && zend_string_equals_literal(lcname, ZEND_TOSTRING_FUNC_NAME) ? IS_STRING : 0);
 	if (CG(active_op_array)->fn_flags & ZEND_ACC_GENERATOR) {
 		zend_mark_function_as_generator();
-		zend_emit_op(NULL, ZEND_GENERATOR_CREATE, NULL, NULL);
+		/* For scope functions, GENERATOR_CREATE must run AFTER ENTER_SCOPE_FUNC
+		 * (so EX is the scope_ed). It is emitted further below. */
+		if (decl->kind != ZEND_AST_SCOPE_FUNC) {
+			zend_emit_op(NULL, ZEND_GENERATOR_CREATE, NULL, NULL);
+		}
 	}
 	if (decl->kind == ZEND_AST_ARROW_FUNC) {
 		zend_compile_implicit_closure_uses(&info);
@@ -8976,11 +8980,6 @@ static zend_op_array *zend_compile_func_decl_ex(
 	}
 
 	if (decl->kind == ZEND_AST_SCOPE_FUNC) {
-		/* Scope functions cannot be generators */
-		if (CG(active_op_array)->fn_flags & ZEND_ACC_GENERATOR) {
-			zend_error_noreturn(E_COMPILE_ERROR, "Scope functions cannot be generators");
-		}
-
 		/* Register scope func params in top-level parent's CV table and record mapping.
 		 * At this point, the scope func's own CV table has params at indices 0..num_args-1.
 		 * We need to also register them in the top-level parent's CV table.
@@ -9048,6 +9047,16 @@ static zend_op_array *zend_compile_func_decl_ex(
 			CG(context).scope_func_parent_op_array = CG(context).prev->scope_func_parent_op_array;
 		} else {
 			CG(context).scope_func_parent_op_array = orig_op_array;
+		}
+
+		/* If this scope fn is also a generator, emit GENERATOR_CREATE here —
+		 * AFTER ENTER_SCOPE_FUNC has switched EX to scope_ed. The
+		 * extended_value=1 marker tells the runtime handler to take the
+		 * scope-fn path: don't memcpy/emalloc, pin generator->execute_data
+		 * to the existing scope_ed, attach to closure. */
+		if (CG(active_op_array)->fn_flags & ZEND_ACC_GENERATOR) {
+			zend_op *gen_create_opline = zend_emit_op(NULL, ZEND_GENERATOR_CREATE, NULL, NULL);
+			gen_create_opline->extended_value = 1;
 		}
 	}
 

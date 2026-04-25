@@ -138,6 +138,20 @@ ZEND_API void zend_generator_close(zend_generator *generator, bool finished_exec
 		 * already cleaning up execute_data. */
 		generator->execute_data = NULL;
 
+		/* Scope-fn generator: scope_ed lives in parent's frame. Most of the
+		 * standard close path does not apply (parent owns CVs and tracked
+		 * temporaries; the frame is not heap-allocated). Run only the
+		 * unfinished-call cleanup and the shared scope_ed teardown. */
+		if (UNEXPECTED(execute_data->func
+		            && (execute_data->func->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)
+		            && ((uintptr_t)execute_data->extra_named_params & ZEND_SCOPE_ED_ENP_TAG_SCOPE_ED))) {
+			if (UNEXPECTED(!finished_execution) && !CG(unclean_shutdown)) {
+				zend_generator_cleanup_unfinished_execution(generator, execute_data, 0);
+			}
+			zend_scope_ed_cleanup(execute_data);
+			return;
+		}
+
 		if (EX_CALL_INFO() & ZEND_CALL_HAS_SYMBOL_TABLE) {
 			zend_clean_and_cache_symbol_table(execute_data->symbol_table);
 		}

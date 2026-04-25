@@ -5099,6 +5099,16 @@ ZEND_API void zend_vm_stack_free_tracked_temporaries_ex(zend_execute_data *call)
 							zval_ptr_dtor(&transfer.value);
 							EG(exception) = prev_exception;
 						}
+					} else if (UNEXPECTED(*attached_object_ptr != NULL
+					                   && (*attached_object_ptr)->ce == zend_ce_generator)) {
+						/* Force-destruct the generator. zend_generator_close's
+						 * scope-fn branch runs the cleanup_unfinished_execution
+						 * (if the generator was suspended mid-yield) and
+						 * detaches attached_object. The closure's CALL_CLOSURE
+						 * ref is released by zend_generator_free_storage when
+						 * the generator object's refcount drops to zero. */
+						zend_generator *gen = (zend_generator *) *attached_object_ptr;
+						zend_generator_close(gen, false);
 					}
 					ZEND_ASSERT(*zend_closure_get_attached_object_ptr(Z_OBJ_P(entry)) == NULL);
 				}

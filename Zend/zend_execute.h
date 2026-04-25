@@ -25,6 +25,7 @@
 #include "zend_operators.h"
 #include "zend_variables.h"
 #include "zend_constants.h"
+#include "zend_closures.h"
 
 #include <stdint.h>
 
@@ -345,6 +346,21 @@ static zend_always_inline bool zend_pointer_in_vm_stack(zend_vm_stack stack, con
 		stack = stack->prev;
 	}
 	return false;
+}
+
+/* Common scope_ed teardown: detaches the closure's attached_object back-ref
+ * and clears the recursion guard. Caller is responsible for releasing the
+ * closure's ZEND_CALL_CLOSURE ref (leave_helper does an explicit OBJ_RELEASE
+ * after; the generator-close path lets zend_generator_free_storage's
+ * closure-release handle it). */
+static zend_always_inline void zend_scope_ed_cleanup(zend_execute_data *scope_ed)
+{
+	zend_object *closure_obj = ZEND_CLOSURE_OBJECT(scope_ed->func);
+	zval *this_ptr = zend_closure_get_this_ptr_ptr(closure_obj);
+	zend_object **attached_object_ptr = zend_closure_get_attached_object_ptr(closure_obj);
+
+	*attached_object_ptr = NULL;
+	Z_EXTRA_P(this_ptr) = 0;
 }
 
 static zend_always_inline void zend_vm_init_call_frame(zend_execute_data *call, uint32_t call_info, zend_function *func, uint32_t num_args, void *object_or_called_scope)
