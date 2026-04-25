@@ -4996,17 +4996,16 @@ ZEND_API void zend_vm_stack_free_tracked_temporaries_ex(zend_execute_data *call)
 				bool escaped = GC_REFCOUNT(Z_OBJ_P(entry)) > 1;
 
 				if (escaped) {
-					/* If a fiber is currently inside this closure (cross-stack
-					 * scope_ed attached at ENTER_SCOPE_FUNC), force-drive its
-					 * unwind through the scope_ed before we touch the parent's
-					 * frame layout. The fiber stays alive: it suspends at the
-					 * scope_ed boundary with the thrown exception deferred for
-					 * re-injection on the user's next resume. The fiber's ref
-					 * to the closure guarantees we are in this `if (escaped)`. */
-					zend_fiber **attached_fiber_ptr =
-						zend_closure_get_attached_fiber_ptr(Z_OBJ_P(entry));
-					if (UNEXPECTED(*attached_fiber_ptr != NULL)) {
-						zend_fiber *fiber = *attached_fiber_ptr;
+					/* If an object is currently attached to this closure
+					 * (a Fiber driving a forced unwind through the scope_ed,
+					 * or a Generator pinned to it), tear it down before we
+					 * touch the parent's frame layout. The attached object's
+					 * ref to the closure guarantees we are in `if (escaped)`. */
+					zend_object **attached_object_ptr =
+						zend_closure_get_attached_object_ptr(Z_OBJ_P(entry));
+					if (UNEXPECTED(*attached_object_ptr != NULL
+					            && (*attached_object_ptr)->ce == zend_ce_fiber)) {
+						zend_fiber *fiber = (zend_fiber *)*attached_object_ptr;
 						/* Snapshot which parent CVs are UNDEF before force-unwind:
 						 * the unwind may run scope-fn body code that assigns to
 						 * our CVs (catch variables, etc). i_free_compiled_variables
@@ -5071,7 +5070,7 @@ ZEND_API void zend_vm_stack_free_tracked_temporaries_ex(zend_execute_data *call)
 							zend_fiber_force_unwind_resume(fiber, &thrown);
 						zval_ptr_dtor(&thrown);
 
-						ZEND_ASSERT(*attached_fiber_ptr == NULL);
+						ZEND_ASSERT(*attached_object_ptr == NULL);
 						ZEND_ASSERT(fiber->forced_unwind_target == NULL);
 
 						/* Clean up any parent CVs that were assigned during the
@@ -5101,7 +5100,7 @@ ZEND_API void zend_vm_stack_free_tracked_temporaries_ex(zend_execute_data *call)
 							EG(exception) = prev_exception;
 						}
 					}
-					ZEND_ASSERT(*zend_closure_get_attached_fiber_ptr(Z_OBJ_P(entry)) == NULL);
+					ZEND_ASSERT(*zend_closure_get_attached_object_ptr(Z_OBJ_P(entry)) == NULL);
 				}
 
 				Z_PTR_P(tmp) = NULL; /* invalidate parent_execute_data */

@@ -33,12 +33,16 @@ typedef struct _zend_closure {
 	zval              this_ptr;
 	zend_class_entry *called_scope;
 	zif_handler       orig_internal_handler;
-	/* For scope-fn closures only: the fiber currently inside the closure
-	 * (set by ZEND_ENTER_SCOPE_FUNC when the scope_ed is on a different
-	 * vm_stack than EG(active_fiber), cleared by zend_leave_helper).
-	 * Used at parent-exit cleanup to drive a forced unwind through the
-	 * scope_ed before the parent's frame is freed. NULL otherwise. */
-	struct _zend_fiber *attached_fiber;
+	/* For scope-fn closures only: the object whose lifetime is bound to the
+	 * scope_ed currently active in this closure. Either:
+	 *   - a Fiber (set at ZEND_ENTER_SCOPE_FUNC when the scope_ed is on a
+	 *     different vm_stack than EG(active_fiber)), or
+	 *   - a Generator (set when ZEND_ENTER_SCOPE_FUNC enters a scope fn
+	 *     marked ZEND_ACC_GENERATOR).
+	 * Disambiguated by ->ce. Cleared at parent-exit cleanup, which force-
+	 * unwinds the Fiber or force-destructs the Generator before freeing
+	 * the parent's frame. NULL when the closure is not currently entered. */
+	zend_object       *attached_object;
 } zend_closure;
 
 /* non-static since it needs to be referenced */
@@ -554,10 +558,10 @@ ZEND_API zval* zend_closure_get_this_ptr_ptr(zend_object *obj) /* {{{ */
 }
 /* }}} */
 
-ZEND_API struct _zend_fiber **zend_closure_get_attached_fiber_ptr(zend_object *obj)
+ZEND_API zend_object **zend_closure_get_attached_object_ptr(zend_object *obj)
 {
 	zend_closure *closure = (zend_closure *)obj;
-	return &closure->attached_fiber;
+	return &closure->attached_object;
 }
 
 static zend_function *zend_closure_get_method(zend_object **object, zend_string *method, const zval *key) /* {{{ */

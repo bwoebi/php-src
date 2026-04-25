@@ -3006,30 +3006,32 @@ ZEND_VM_HOT_HELPER(zend_leave_helper, ANY, ANY)
 		bool just_crossed_forced_unwind = false;
 
 		/* Detach fiber back-ref if ENTER_SCOPE_FUNC set it. */
-		if (UNEXPECTED(enp_tag & ZEND_SCOPE_ED_ENP_TAG_FIBER_ATTACHED)) {
-			zend_fiber **attached_fiber_ptr = zend_closure_get_attached_fiber_ptr(closure_obj);
-			ZEND_ASSERT(*attached_fiber_ptr != NULL);
-			zend_fiber *attached_fiber = *attached_fiber_ptr;
-			*attached_fiber_ptr = NULL;
+		if (UNEXPECTED(enp_tag & ZEND_SCOPE_ED_ENP_TAG_OBJECT_ATTACHED)) {
+			zend_object **attached_object_ptr = zend_closure_get_attached_object_ptr(closure_obj);
+			ZEND_ASSERT(*attached_object_ptr != NULL);
+			zend_object *attached_object = *attached_object_ptr;
+			*attached_object_ptr = NULL;
 
-			/* If we are being driven through this scope_ed by parent-exit
-			 * forced-unwind cleanup, hand the in-flight exception (if any)
-			 * to the fiber's deferred slot for re-injection on resume.
-			 * If the user swallowed the exception inside scope_ed, drop
-			 * the deferred ref entirely. Either way, we must synthetic-
-			 * suspend back to the parent at the leave_helper tail. */
-			if (UNEXPECTED(attached_fiber->forced_unwind_target == scope_ed)) {
-				ZEND_ASSERT(attached_fiber->deferred_exception != NULL);
-				attached_fiber->forced_unwind_target = NULL;
-				if (EG(exception) != NULL) {
-					OBJ_RELEASE(attached_fiber->deferred_exception);
-					attached_fiber->deferred_exception = EG(exception);
-					EG(exception) = NULL;
-				} else {
-					OBJ_RELEASE(attached_fiber->deferred_exception);
-					attached_fiber->deferred_exception = NULL;
+			/* The attached object is either a Fiber driving a forced unwind
+			 * through this scope_ed, or a Generator whose lifetime is bound
+			 * to the scope_ed. We only need special handling for the Fiber
+			 * forced-unwind case here; the Generator's destructor handles
+			 * its own cleanup. */
+			if (attached_object->ce == zend_ce_fiber) {
+				zend_fiber *attached_fiber = (zend_fiber *)attached_object;
+				if (UNEXPECTED(attached_fiber->forced_unwind_target == scope_ed)) {
+					ZEND_ASSERT(attached_fiber->deferred_exception != NULL);
+					attached_fiber->forced_unwind_target = NULL;
+					if (EG(exception) != NULL) {
+						OBJ_RELEASE(attached_fiber->deferred_exception);
+						attached_fiber->deferred_exception = EG(exception);
+						EG(exception) = NULL;
+					} else {
+						OBJ_RELEASE(attached_fiber->deferred_exception);
+						attached_fiber->deferred_exception = NULL;
+					}
+					just_crossed_forced_unwind = true;
 				}
-				just_crossed_forced_unwind = true;
 			}
 		}
 
@@ -10967,10 +10969,10 @@ ZEND_VM_HANDLER(213, ZEND_ENTER_SCOPE_FUNC, ANY, ANY)
 		 * Attach the fiber to the closure so parent-exit cleanup can
 		 * drive a forced unwind through this scope_ed before the parent's
 		 * frame is freed. */
-		zend_fiber **attached_fiber_ptr = zend_closure_get_attached_fiber_ptr(closure_obj);
-		ZEND_ASSERT(*attached_fiber_ptr == NULL); /* recursion guard above */
-		*attached_fiber_ptr = EG(active_fiber);
-		scope_ed_enp_tag |= ZEND_SCOPE_ED_ENP_TAG_FIBER_ATTACHED;
+		zend_object **attached_object_ptr = zend_closure_get_attached_object_ptr(closure_obj);
+		ZEND_ASSERT(*attached_object_ptr == NULL); /* recursion guard above */
+		*attached_object_ptr = &EG(active_fiber)->std;
+		scope_ed_enp_tag |= ZEND_SCOPE_ED_ENP_TAG_OBJECT_ATTACHED;
 	}
 	scope_ed->extra_named_params = (zend_array *)((uintptr_t)call_frame | scope_ed_enp_tag);
 
