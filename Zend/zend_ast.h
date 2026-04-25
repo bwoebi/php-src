@@ -44,7 +44,6 @@ enum _zend_ast_kind {
 	ZEND_AST_METHOD,
 	ZEND_AST_CLASS,
 	ZEND_AST_ARROW_FUNC,
-	ZEND_AST_SCOPE_FUNC,
 	ZEND_AST_PROPERTY_HOOK,
 
 	/* list nodes */
@@ -228,6 +227,10 @@ typedef struct _zend_ast_decl {
 	zend_string *name;
 	zend_ast *child[5];
 } zend_ast_decl;
+
+/* Bits for zend_ast_decl::attr.
+ * SCOPE_FUNC: a ZEND_AST_CLOSURE produced from `fn(args) { body }` syntax. */
+#define ZEND_AST_DECL_ATTR_SCOPE_FUNC (1u << 0)
 
 // TODO: rename
 typedef struct _zend_ast_fcc {

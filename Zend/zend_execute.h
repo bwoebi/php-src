@@ -363,6 +363,17 @@ static zend_always_inline void zend_scope_ed_cleanup(zend_execute_data *scope_ed
 	Z_EXTRA_P(this_ptr) = 0;
 }
 
+/* True iff `ex` is a scope-fn frame. The tag bit is only set by
+ * ZEND_ENTER_SCOPE_FUNC, but extra_named_params is not zero-initialized
+ * for every frame in the engine — gate on the function flag first to
+ * avoid reading a tag bit out of garbage. */
+static zend_always_inline bool zend_is_scope_ed(const zend_execute_data *ex)
+{
+	return ex->func != NULL
+		&& (ex->func->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)
+		&& ((uintptr_t)ex->extra_named_params & ZEND_SCOPE_ED_ENP_TAG_SCOPE_ED);
+}
+
 static zend_always_inline void zend_vm_init_call_frame(zend_execute_data *call, uint32_t call_info, zend_function *func, uint32_t num_args, void *object_or_called_scope)
 {
 	ZEND_ASSERT(!func->common.scope || object_or_called_scope);
@@ -434,12 +445,9 @@ static zend_always_inline void zend_vm_stack_free_extra_args(zend_execute_data *
  *
  * Layout: TMP[T-1] = base entry (Z_EXTRA high 24 bits = count),
  *         TMP[T-2..] = entries (Z_EXTRA low 8 bits = mode).
- * Mode: 0=nop, 1=free, 2=scope_func cleanup.
  *
  * Guarded by ZEND_CALL_TRACKED_TEMPORARIES flag (shared with ZEND_CALL_FREE_EXTRA_ARGS)
  * and ZEND_ACC2_HAS_TRACKED_TEMPORARIES in fn_flags2. */
-#define ZEND_TRACKED_TMP_NOP        0
-#define ZEND_TRACKED_TMP_FREE       1
 #define ZEND_TRACKED_TMP_SCOPE_FUNC 2
 
 ZEND_API void zend_vm_stack_free_tracked_temporaries_ex(zend_execute_data *execute_data);
@@ -504,6 +512,67 @@ static zend_always_inline void zend_vm_stack_extend_call_frame(
 }
 
 ZEND_API void ZEND_FASTCALL zend_free_extra_named_params(zend_array *extra_named_params);
+
+/* Pop the call frame that originally invoked a scope fn from the vm_stack.
+ * `original_call_frame` is recovered from a scope_ed's extra_named_params via
+ * the SCOPE_ED_ENP_TAG_MASK clear. Frees extra args / extra named params on
+ * that frame, then resets vm_stack_top. */
+static zend_always_inline void zend_scope_ed_pop_original_call_frame(zend_execute_data *original_call_frame)
+{
+	if (original_call_frame) {
+		uint32_t orig_info = ZEND_CALL_INFO(original_call_frame);
+		if (UNEXPECTED(orig_info & ZEND_CALL_FREE_EXTRA_ARGS)) {
+			zend_vm_stack_free_extra_args_ex(orig_info, original_call_frame);
+		}
+		if (UNEXPECTED(orig_info & ZEND_CALL_HAS_EXTRA_NAMED_PARAMS)) {
+			zend_free_extra_named_params(original_call_frame->extra_named_params);
+		}
+		EG(vm_stack_top) = (zval *)original_call_frame;
+	}
+}
+
+/* Find the literal-pool index where a scope-fn op_array's parameter→parent-CV
+ * mapping starts. Stored on ENTER_SCOPE_FUNC's op2.num at compile time. The
+ * scan is bounded by num_args + a few prologue opcodes. */
+static zend_always_inline uint32_t zend_scope_fn_first_literal(const zend_op_array *op_array)
+{
+	ZEND_ASSERT(op_array->fn_flags2 & ZEND_ACC2_SCOPE_FUNC);
+	for (uint32_t j = 0; j < op_array->last; j++) {
+		if (op_array->opcodes[j].opcode == ZEND_ENTER_SCOPE_FUNC) {
+			return op_array->opcodes[j].op2.num;
+		}
+	}
+	ZEND_UNREACHABLE();
+}
+
+/* Resolve a scope-fn's i-th argument zval. For declared params (i < num_args)
+ * the slot lives in the parent's CV table via the literal mapping; for extras
+ * it lives at the tail of the original call frame. Returns NULL if the parent
+ * frame has gone away (lifetime error) or there is no original call frame
+ * for an extra-arg lookup. `first_literal` should come from
+ * zend_scope_fn_first_literal(scope_ed->func->op_array). */
+static zend_always_inline zval *zend_scope_fn_get_arg_zval(
+	const zend_execute_data *scope_ed, uint32_t i, uint32_t first_literal)
+{
+	const zend_op_array *op_array = &scope_ed->func->op_array;
+	if (i < op_array->num_args) {
+		zval *this_ptr = zend_closure_get_this_ptr_ptr(ZEND_CLOSURE_OBJECT(scope_ed->func));
+		zend_execute_data *parent_ed = (zend_execute_data *)Z_PTR_P(this_ptr);
+		if (UNEXPECTED(!parent_ed)) {
+			return NULL;
+		}
+		uint32_t parent_cv_offset = (uint32_t)Z_LVAL(op_array->literals[first_literal + i]);
+		return ZEND_CALL_VAR(parent_ed, parent_cv_offset);
+	}
+	zend_execute_data *call_frame = (zend_execute_data *)
+		((uintptr_t)scope_ed->extra_named_params & ~(uintptr_t)ZEND_SCOPE_ED_ENP_TAG_MASK);
+	if (UNEXPECTED(!call_frame)) {
+		return NULL;
+	}
+	zval *base = ZEND_CALL_VAR_NUM(call_frame,
+		call_frame->func->op_array.last_var + call_frame->func->op_array.T);
+	return base + (i - op_array->num_args);
+}
 
 /* services */
 ZEND_API const char *get_active_class_name(const char **space);

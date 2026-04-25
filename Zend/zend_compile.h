@@ -181,7 +181,6 @@ typedef struct _zend_try_catch_element {
 #define ZEND_LIVE_SILENCE 2
 #define ZEND_LIVE_ROPE    3
 #define ZEND_LIVE_NEW     4
-#define ZEND_LIVE_SCOPE_FUNC 5
 #define ZEND_LIVE_MASK    7
 
 typedef struct _zend_live_range {

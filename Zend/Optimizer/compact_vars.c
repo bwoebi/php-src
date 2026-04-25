@@ -24,11 +24,11 @@ void zend_optimizer_compact_vars(zend_op_array *op_array) {
 	int i;
 
 	/* Skip for parent op_arrays containing scope functions — reserved TMPs
-	 * must stay at their fixed positions for the scope_ed frame layout. */
-	for (i = 0; i < op_array->last; i++) {
-		if (op_array->opcodes[i].opcode == ZEND_DECLARE_SCOPE_FUNC) {
-			return;
-		}
+	 * must stay at their fixed positions for the scope_ed frame layout.
+	 * HAS_TRACKED_TEMPORARIES is set in pass_two iff DECLARE_SCOPE_FUNC
+	 * opcodes are present. */
+	if (op_array->fn_flags2 & ZEND_ACC2_HAS_TRACKED_TEMPORARIES) {
+		return;
 	}
 
 	ALLOCA_FLAG(use_heap1);
