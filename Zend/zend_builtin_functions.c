@@ -1789,6 +1789,75 @@ static void debug_backtrace_get_args(zend_execute_data *call, zval *arg_array) /
 		uint32_t i = 0;
 		zval *p = ZEND_CALL_ARG(call, 1);
 
+		/* Scope functions: positive arg slots on the scope_ed frame are
+		 * uninitialized (scope_ed lives in parent's TMP space, no own arg
+		 * slots). Mirror ZEND_FUNC_GET_ARGS — read declared params from
+		 * parent CVs via the literal mapping, extra args from the
+		 * original call frame stored in extra_named_params. */
+		if (call->func->type == ZEND_USER_FUNCTION
+		 && (call->func->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)
+		 && ((uintptr_t)call->extra_named_params & ZEND_SCOPE_ED_ENP_TAG_SCOPE_ED)) {
+			zval *this_ptr = zend_closure_get_this_ptr_ptr(ZEND_CLOSURE_OBJECT(call->func));
+			zend_execute_data *parent_ed = (zend_execute_data *)Z_PTR_P(this_ptr);
+			uint32_t num_params = call->func->op_array.num_args;
+			uint32_t first_literal = 0;
+			for (uint32_t j = 0; j < call->func->op_array.last; j++) {
+				if (call->func->op_array.opcodes[j].opcode == ZEND_ENTER_SCOPE_FUNC) {
+					first_literal = call->func->op_array.opcodes[j].op2.num;
+					break;
+				}
+			}
+			array_init_size(arg_array, num_args);
+			zend_hash_real_init_packed(Z_ARRVAL_P(arg_array));
+			ZEND_HASH_FILL_PACKED(Z_ARRVAL_P(arg_array)) {
+				/* Declared params: from parent CVs */
+				while (i < num_args && i < num_params) {
+					zval *q;
+					if (parent_ed) {
+						uint32_t parent_cv_offset = (uint32_t)Z_LVAL(call->func->op_array.literals[first_literal + i]);
+						q = ZEND_CALL_VAR(parent_ed, parent_cv_offset);
+					} else {
+						q = NULL;
+					}
+					zval original_arg;
+					if (q && EXPECTED(Z_TYPE_INFO_P(q) != IS_UNDEF)) {
+						ZVAL_DEREF(q);
+						ZVAL_COPY_VALUE(&original_arg, q);
+					} else {
+						ZVAL_NULL(&original_arg);
+					}
+					Z_TRY_ADDREF_P(&original_arg);
+					ZEND_HASH_FILL_SET(&original_arg);
+					ZEND_HASH_FILL_NEXT();
+					i++;
+				}
+				/* Extra args: from the original call frame */
+				if (i < num_args) {
+					zend_execute_data *cf = (zend_execute_data *)((uintptr_t)call->extra_named_params & ~(uintptr_t)ZEND_SCOPE_ED_ENP_TAG_MASK);
+					if (cf) {
+						zval *ep = ZEND_CALL_VAR_NUM(cf,
+							cf->func->op_array.last_var + cf->func->op_array.T);
+						while (i < num_args) {
+							zval original_arg;
+							if (EXPECTED(Z_TYPE_INFO_P(ep) != IS_UNDEF)) {
+								zval *deref = ep;
+								ZVAL_DEREF(deref);
+								ZVAL_COPY_VALUE(&original_arg, deref);
+							} else {
+								ZVAL_NULL(&original_arg);
+							}
+							Z_TRY_ADDREF_P(&original_arg);
+							ZEND_HASH_FILL_SET(&original_arg);
+							ZEND_HASH_FILL_NEXT();
+							ep++;
+							i++;
+						}
+					}
+				}
+			} ZEND_HASH_FILL_END();
+			return;
+		}
+
 		array_init_size(arg_array, num_args);
 		zend_hash_real_init_packed(Z_ARRVAL_P(arg_array));
 		ZEND_HASH_FILL_PACKED(Z_ARRVAL_P(arg_array)) {

@@ -9952,7 +9952,7 @@ ZEND_VM_HANDLER(172, ZEND_FUNC_GET_ARGS, UNUSED|CONST, UNUSED)
 			}
 			/* Extra args: read from the original call frame (tagged ptr in extra_named_params) */
 			if (i < arg_count) {
-				zend_execute_data *call_frame = (zend_execute_data *)((uintptr_t)EX(extra_named_params) & ~(uintptr_t)1);
+				zend_execute_data *call_frame = (zend_execute_data *)((uintptr_t)EX(extra_named_params) & ~(uintptr_t)ZEND_SCOPE_ED_ENP_TAG_MASK);
 				if (call_frame) {
 					zval *p = ZEND_CALL_VAR_NUM(call_frame,
 						call_frame->func->op_array.last_var + call_frame->func->op_array.T);
