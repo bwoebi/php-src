@@ -27,6 +27,14 @@ BEGIN_EXTERN_C()
 #define ZEND_CLOSURE_OBJECT(op_array) \
 	((zend_object*)((char*)(op_array) - sizeof(zend_object)))
 
+/* Tag bits stored in scope_ed->extra_named_params (zval-aligned, low bits free).
+ * Bit 0: this is a scope_ed (set by ZEND_ENTER_SCOPE_FUNC, checked by leave_helper).
+ * Bit 1: this scope_ed attached a fiber to its closure on enter (must detach on leave). */
+#define ZEND_SCOPE_ED_ENP_TAG_SCOPE_ED       (1u << 0)
+#define ZEND_SCOPE_ED_ENP_TAG_FIBER_ATTACHED (1u << 1)
+#define ZEND_SCOPE_ED_ENP_TAG_MASK \
+	(ZEND_SCOPE_ED_ENP_TAG_SCOPE_ED | ZEND_SCOPE_ED_ENP_TAG_FIBER_ATTACHED)
+
 void zend_register_closure_ce(void);
 void zend_closure_bind_var(zval *closure_zv, zend_string *var_name, zval *var);
 void zend_closure_bind_var_ex(zval *closure_zv, uint32_t offset, zval *val);
@@ -40,6 +48,12 @@ ZEND_API zend_function *zend_get_closure_invoke_method(zend_object *obj);
 ZEND_API const zend_function *zend_get_closure_method_def(zend_object *obj);
 ZEND_API zval* zend_get_closure_this_ptr(zval *obj);
 ZEND_API zval* zend_closure_get_this_ptr_ptr(zend_object *obj);
+
+/* For scope-fn closures: returns &closure->attached_fiber so callers can
+ * load/store the back-reference. Caller must ensure the closure is a scope
+ * function (ZEND_ACC2_SCOPE_FUNC). */
+struct _zend_fiber;
+ZEND_API struct _zend_fiber **zend_closure_get_attached_fiber_ptr(zend_object *obj);
 
 END_EXTERN_C()
 

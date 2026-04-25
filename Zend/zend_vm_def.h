@@ -2994,13 +2994,44 @@ ZEND_VM_HOT_HELPER(zend_leave_helper, ANY, ANY)
 
 	/* Scope function: don't free CVs, don't pop VM stack for scope_ed itself.
 	 * We detect we're on scope_ed (not the initial call frame) by checking if
-	 * extra_named_params has the low bit set (tagged pointer from ENTER_SCOPE_FUNC). */
+	 * extra_named_params has bit 0 set (tagged pointer from ENTER_SCOPE_FUNC). */
 	if (UNEXPECTED(EX(func) && (EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)
-	    && ((uintptr_t)EX(extra_named_params) & 1))) {
+	    && ((uintptr_t)EX(extra_named_params) & ZEND_SCOPE_ED_ENP_TAG_SCOPE_ED))) {
 		zend_object *closure_obj = ZEND_CLOSURE_OBJECT(EX(func));
 		zval *this_ptr = zend_closure_get_this_ptr_ptr(closure_obj);
-		/* Retrieve original call frame (clear the tag bit) */
-		zend_execute_data *original_call_frame = (zend_execute_data *)((uintptr_t)EX(extra_named_params) & ~(uintptr_t)1);
+		uintptr_t enp_tag = (uintptr_t)EX(extra_named_params);
+		/* Retrieve original call frame (clear all tag bits) */
+		zend_execute_data *original_call_frame = (zend_execute_data *)(enp_tag & ~(uintptr_t)ZEND_SCOPE_ED_ENP_TAG_MASK);
+		zend_execute_data *scope_ed = execute_data;
+		bool just_crossed_forced_unwind = false;
+
+		/* Detach fiber back-ref if ENTER_SCOPE_FUNC set it. */
+		if (UNEXPECTED(enp_tag & ZEND_SCOPE_ED_ENP_TAG_FIBER_ATTACHED)) {
+			zend_fiber **attached_fiber_ptr = zend_closure_get_attached_fiber_ptr(closure_obj);
+			ZEND_ASSERT(*attached_fiber_ptr != NULL);
+			zend_fiber *attached_fiber = *attached_fiber_ptr;
+			*attached_fiber_ptr = NULL;
+
+			/* If we are being driven through this scope_ed by parent-exit
+			 * forced-unwind cleanup, hand the in-flight exception (if any)
+			 * to the fiber's deferred slot for re-injection on resume.
+			 * If the user swallowed the exception inside scope_ed, drop
+			 * the deferred ref entirely. Either way, we must synthetic-
+			 * suspend back to the parent at the leave_helper tail. */
+			if (UNEXPECTED(attached_fiber->forced_unwind_target == scope_ed)) {
+				ZEND_ASSERT(attached_fiber->deferred_exception != NULL);
+				attached_fiber->forced_unwind_target = NULL;
+				if (EG(exception) != NULL) {
+					OBJ_RELEASE(attached_fiber->deferred_exception);
+					attached_fiber->deferred_exception = EG(exception);
+					EG(exception) = NULL;
+				} else {
+					OBJ_RELEASE(attached_fiber->deferred_exception);
+					attached_fiber->deferred_exception = NULL;
+				}
+				just_crossed_forced_unwind = true;
+			}
+		}
 
 		/* Clear recursion flag */
 		Z_EXTRA_P(this_ptr) = 0;
@@ -3014,8 +3045,22 @@ ZEND_VM_HOT_HELPER(zend_leave_helper, ANY, ANY)
 		execute_data = EX(prev_execute_data);
 
 		if (UNEXPECTED(call_info & ZEND_CALL_TOP)) {
-			/* Called via zend_call_function: exit execute_ex.
-			 * The caller (zend_call_function) frees the original call frame. */
+			/* Called via zend_call_function: exit execute_ex. The caller
+			 * (zend_call_function) frees the original call frame.
+			 * If we just crossed a forced-unwind boundary in this branch,
+			 * the fiber's body is exiting along with the scope_ed (the
+			 * scope fn was the fiber's entry callable). Restore the
+			 * deferred exception so it propagates out as the fiber's
+			 * terminating throw — the fiber will TERMINATE rather than
+			 * keep running, since there is no further user code to drive. */
+			if (UNEXPECTED(just_crossed_forced_unwind)) {
+				zend_fiber *fiber = EG(active_fiber);
+				ZEND_ASSERT(fiber != NULL);
+				if (fiber->deferred_exception) {
+					EG(exception) = fiber->deferred_exception;
+					fiber->deferred_exception = NULL;
+				}
+			}
 			ZEND_VM_RETURN();
 		}
 
@@ -3030,6 +3075,23 @@ ZEND_VM_HOT_HELPER(zend_leave_helper, ANY, ANY)
 				zend_free_extra_named_params(original_call_frame->extra_named_params);
 			}
 			EG(vm_stack_top) = (zval *)original_call_frame;
+		}
+
+		/* If we just crossed the forced-unwind boundary, synthetically
+		 * suspend back to the parent's leave_helper (which is currently
+		 * blocked in zend_fiber_force_unwind_resume). On the user's next
+		 * resume, re-inject any deferred exception so it continues
+		 * propagating from execute_data (scope_ed's prev). */
+		if (UNEXPECTED(just_crossed_forced_unwind)) {
+			zend_fiber *fiber = EG(active_fiber);
+			ZEND_ASSERT(fiber != NULL);
+			zend_fiber_synthetic_suspend(fiber, execute_data);
+			if (fiber->deferred_exception) {
+				EG(exception) = fiber->deferred_exception;
+				fiber->deferred_exception = NULL;
+			}
+			/* execute_data is unchanged. Continue normal leave path:
+			 * rethrow if exception was re-injected, else LOAD_NEXT_OPLINE. */
 		}
 
 		if (UNEXPECTED(EG(exception) != NULL)) {
@@ -10895,8 +10957,22 @@ ZEND_VM_HANDLER(213, ZEND_ENTER_SCOPE_FUNC, ANY, ANY)
 	scope_ed->run_time_cache = EX(run_time_cache);
 	/* Stash original call frame pointer for cleanup in leave_helper.
 	 * We repurpose extra_named_params since scope_ed doesn't need it.
-	 * Tag with low bit to distinguish from real zend_array pointers. */
-	scope_ed->extra_named_params = (zend_array *)((uintptr_t)call_frame | 1);
+	 * Low tag bits encode scope-ed metadata; see ZEND_SCOPE_ED_ENP_TAG_*. */
+	uintptr_t scope_ed_enp_tag = ZEND_SCOPE_ED_ENP_TAG_SCOPE_ED;
+	if (UNEXPECTED(EG(active_fiber) != NULL
+	            && !zend_pointer_in_vm_stack(EG(vm_stack), scope_ed))) {
+		/* scope_ed lives on a different vm_stack than the active fiber's
+		 * own stack — its memory is owned by some calling context that
+		 * could return (and free it) while the fiber is still suspended.
+		 * Attach the fiber to the closure so parent-exit cleanup can
+		 * drive a forced unwind through this scope_ed before the parent's
+		 * frame is freed. */
+		zend_fiber **attached_fiber_ptr = zend_closure_get_attached_fiber_ptr(closure_obj);
+		ZEND_ASSERT(*attached_fiber_ptr == NULL); /* recursion guard above */
+		*attached_fiber_ptr = EG(active_fiber);
+		scope_ed_enp_tag |= ZEND_SCOPE_ED_ENP_TAG_FIBER_ATTACHED;
+	}
+	scope_ed->extra_named_params = (zend_array *)((uintptr_t)call_frame | scope_ed_enp_tag);
 
 	/* Copy This and call_info from current frame */
 	ZVAL_COPY_VALUE(&scope_ed->This, &EX(This));

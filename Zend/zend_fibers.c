@@ -747,8 +747,49 @@ ZEND_API void zend_fiber_resume_exception(zend_fiber *fiber, zval *exception, zv
 	zend_fiber_delegate_transfer_result(&transfer, EG(current_execute_data), return_value);
 }
 
+ZEND_API zend_fiber_transfer zend_fiber_force_unwind_resume(zend_fiber *fiber, zval *exception)
+{
+	ZEND_ASSERT(fiber->context.status == ZEND_FIBER_STATUS_SUSPENDED && fiber->caller == NULL);
+	fiber->stack_bottom->prev_execute_data = EG(current_execute_data);
+	return zend_fiber_resume_internal(fiber, exception, /* exception */ true);
+}
+
+ZEND_API void zend_fiber_synthetic_suspend(zend_fiber *fiber, zend_execute_data *current_ed)
+{
+	/* Mirrors zend_fiber_suspend_internal, but called from a VM helper at
+	 * a synthetic suspend point (post forced-unwind boundary in
+	 * zend_leave_helper). Updates fiber state, switches back to the
+	 * caller (the resumer that armed the forced unwind). */
+	ZEND_ASSERT(!(fiber->flags & ZEND_FIBER_FLAG_DESTROYED));
+	ZEND_ASSERT(fiber->context.status == ZEND_FIBER_STATUS_RUNNING);
+	ZEND_ASSERT(fiber->caller != NULL);
+
+	zend_fiber_context *caller = fiber->caller;
+	fiber->previous = EG(current_fiber_context);
+	fiber->caller = NULL;
+	fiber->execute_data = current_ed;
+
+	zend_fiber_transfer transfer = zend_fiber_switch_to(caller, NULL, false);
+
+	/* The other side passed us a value back (NULL on plain resume).
+	 * Discard it — the caller of zend_fiber_force_unwind_resume in
+	 * zend_execute.c only cares about the synchronization, and any
+	 * meaningful value is communicated through fiber->deferred_exception
+	 * which is re-injected by the caller of this function. */
+	zval_ptr_dtor(&transfer.value);
+}
+
 ZEND_API void zend_fiber_suspend(zend_fiber *fiber, zval *value, zval *return_value)
 {
+	if (UNEXPECTED(fiber->forced_unwind_target != NULL)) {
+		ZEND_ASSERT(fiber->deferred_exception != NULL);
+		GC_ADDREF(fiber->deferred_exception);
+		zend_throw_exception_internal(fiber->deferred_exception);
+		if (return_value) {
+			ZVAL_NULL(return_value);
+		}
+		return;
+	}
 	fiber->stack_bottom->prev_execute_data = NULL;
 
 	zend_fiber_transfer transfer = zend_fiber_suspend_internal(fiber, value);
@@ -943,6 +984,17 @@ ZEND_METHOD(Fiber, suspend)
 
 	if (UNEXPECTED(zend_fiber_switch_blocked())) {
 		zend_throw_error(zend_ce_fiber_error, "Cannot switch fibers in current execution context");
+		RETURN_THROWS();
+	}
+
+	if (UNEXPECTED(fiber->forced_unwind_target != NULL)) {
+		/* Forced-unwind in progress: a parent function is being torn down
+		 * while this fiber holds a cross-stack scope_ed in its chain.
+		 * Reject the suspend and re-throw the deferred exception so the
+		 * unwind keeps moving toward the scope_ed boundary. */
+		ZEND_ASSERT(fiber->deferred_exception != NULL);
+		GC_ADDREF(fiber->deferred_exception);
+		zend_throw_exception_internal(fiber->deferred_exception);
 		RETURN_THROWS();
 	}
 

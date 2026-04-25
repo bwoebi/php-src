@@ -331,6 +331,22 @@ static zend_always_inline zend_vm_stack zend_vm_stack_new_page(size_t size, zend
 	return page;
 }
 
+/* Returns true if `ptr` lies inside any segment of the given vm_stack chain.
+ * Used at ZEND_ENTER_SCOPE_FUNC to determine whether the scope_ed lives on
+ * the currently-active vm_stack: if not, it's a cross-stack scope_ed and
+ * suspending its containing fiber would orphan a pointer once the parent's
+ * frame is freed. */
+static zend_always_inline bool zend_pointer_in_vm_stack(zend_vm_stack stack, const void *ptr) {
+	while (stack) {
+		if ((const char *)ptr >= (const char *)stack
+		 && (const char *)ptr <  (const char *)stack->end) {
+			return true;
+		}
+		stack = stack->prev;
+	}
+	return false;
+}
+
 static zend_always_inline void zend_vm_init_call_frame(zend_execute_data *call, uint32_t call_info, zend_function *func, uint32_t num_args, void *object_or_called_scope)
 {
 	ZEND_ASSERT(!func->common.scope || object_or_called_scope);

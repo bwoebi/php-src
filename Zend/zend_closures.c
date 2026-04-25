@@ -33,6 +33,12 @@ typedef struct _zend_closure {
 	zval              this_ptr;
 	zend_class_entry *called_scope;
 	zif_handler       orig_internal_handler;
+	/* For scope-fn closures only: the fiber currently inside the closure
+	 * (set by ZEND_ENTER_SCOPE_FUNC when the scope_ed is on a different
+	 * vm_stack than EG(active_fiber), cleared by zend_leave_helper).
+	 * Used at parent-exit cleanup to drive a forced unwind through the
+	 * scope_ed before the parent's frame is freed. NULL otherwise. */
+	struct _zend_fiber *attached_fiber;
 } zend_closure;
 
 /* non-static since it needs to be referenced */
@@ -547,6 +553,12 @@ ZEND_API zval* zend_closure_get_this_ptr_ptr(zend_object *obj) /* {{{ */
 	return &closure->this_ptr;
 }
 /* }}} */
+
+ZEND_API struct _zend_fiber **zend_closure_get_attached_fiber_ptr(zend_object *obj)
+{
+	zend_closure *closure = (zend_closure *)obj;
+	return &closure->attached_fiber;
+}
 
 static zend_function *zend_closure_get_method(zend_object **object, zend_string *method, const zval *key) /* {{{ */
 {
