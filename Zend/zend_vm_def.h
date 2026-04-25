@@ -10904,6 +10904,15 @@ ZEND_VM_HANDLER(213, ZEND_ENTER_SCOPE_FUNC, ANY, ANY)
 
 	SAVE_OPLINE();
 
+	/* Clear extra_named_params unless the caller actually populated it.
+	 * Call frames don't zero-init the field, and zend_is_scope_ed reads
+	 * its low bit. If we throw below before tagging it ourselves, the
+	 * leave path would otherwise see stale memory and possibly mistake
+	 * a fresh call frame for a scope_ed. */
+	if (!(call_info & ZEND_CALL_HAS_EXTRA_NAMED_PARAMS)) {
+		call_frame->extra_named_params = NULL;
+	}
+
 	parent_ed = (zend_execute_data *)Z_PTR_P(this_ptr);
 	if (UNEXPECTED(!parent_ed)) {
 		zend_throw_error(NULL, "Cannot call scope function: defining scope has exited");

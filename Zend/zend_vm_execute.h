@@ -4185,6 +4185,15 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_ENTER_SCOPE_F
 
 	SAVE_OPLINE();
 
+	/* Clear extra_named_params unless the caller actually populated it.
+	 * Call frames don't zero-init the field, and zend_is_scope_ed reads
+	 * its low bit. If we throw below before tagging it ourselves, the
+	 * leave path would otherwise see stale memory and possibly mistake
+	 * a fresh call frame for a scope_ed. */
+	if (!(call_info & ZEND_CALL_HAS_EXTRA_NAMED_PARAMS)) {
+		call_frame->extra_named_params = NULL;
+	}
+
 	parent_ed = (zend_execute_data *)Z_PTR_P(this_ptr);
 	if (UNEXPECTED(!parent_ed)) {
 		zend_throw_error(NULL, "Cannot call scope function: defining scope has exited");
@@ -57181,6 +57190,15 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_ENTER_SCOPE_FUNC_S
 	uint32_t call_info = EX_CALL_INFO();
 
 	SAVE_OPLINE();
+
+	/* Clear extra_named_params unless the caller actually populated it.
+	 * Call frames don't zero-init the field, and zend_is_scope_ed reads
+	 * its low bit. If we throw below before tagging it ourselves, the
+	 * leave path would otherwise see stale memory and possibly mistake
+	 * a fresh call frame for a scope_ed. */
+	if (!(call_info & ZEND_CALL_HAS_EXTRA_NAMED_PARAMS)) {
+		call_frame->extra_named_params = NULL;
+	}
 
 	parent_ed = (zend_execute_data *)Z_PTR_P(this_ptr);
 	if (UNEXPECTED(!parent_ed)) {

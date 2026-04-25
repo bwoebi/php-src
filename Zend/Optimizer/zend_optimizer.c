@@ -1048,11 +1048,19 @@ zend_op *zend_optimizer_get_loop_var_def(const zend_op_array *op_array, zend_op 
 	return NULL;
 }
 
-/* True iff `op_array` is or contains a scope-fn declaration. Either case
- * makes the op_array off-limits for TMP-reordering optimizer passes:
- * scope_ed's frame layout depends on fixed offsets in the parent's TMP. */
-static zend_always_inline bool zend_op_array_is_scope_fn_related(const zend_op_array *op_array) {
-	return (op_array->fn_flags2 & (ZEND_ACC2_SCOPE_FUNC | ZEND_ACC2_HAS_TRACKED_TEMPORARIES)) != 0;
+/* True for the scope-fn op_array itself. Its body opcodes carry negative
+ * var offsets baked in by zend_fixup_scope_func_offsets, which violates the
+ * optimizer's positive-offset assumptions — keep these out of every pass. */
+static zend_always_inline bool zend_op_array_is_scope_fn(const zend_op_array *op_array) {
+	return (op_array->fn_flags2 & ZEND_ACC2_SCOPE_FUNC) != 0;
+}
+
+/* True for parent op_arrays that reserve TMP slots for scope_ed frames and
+ * tracked-temporary entries. Most optimizer passes are fine on these, but
+ * any pass that reorders or removes TMPs (compact_temporaries, compact_vars)
+ * would break the fixed scope_ed frame layout — those passes must skip. */
+static zend_always_inline bool zend_op_array_has_reserved_tmps(const zend_op_array *op_array) {
+	return (op_array->fn_flags2 & ZEND_ACC2_HAS_TRACKED_TEMPORARIES) != 0;
 }
 
 static void zend_optimize(zend_op_array      *op_array,
@@ -1062,7 +1070,7 @@ static void zend_optimize(zend_op_array      *op_array,
 		return;
 	}
 
-	if (zend_op_array_is_scope_fn_related(op_array)) {
+	if (zend_op_array_is_scope_fn(op_array)) {
 		return;
 	}
 
@@ -1128,9 +1136,13 @@ static void zend_optimize(zend_op_array      *op_array,
 
 	/* pass 9:
 	 * - Optimize temp variables usage
+	 *
+	 * Parent op_arrays with reserved scope_ed TMPs must skip — pass 9
+	 * renumbers TMPs.
 	 */
 	if ((ZEND_OPTIMIZER_PASS_9 & ctx->optimization_level) &&
-	    !(ZEND_OPTIMIZER_PASS_7 & ctx->optimization_level)) {
+	    !(ZEND_OPTIMIZER_PASS_7 & ctx->optimization_level) &&
+	    !zend_op_array_has_reserved_tmps(op_array)) {
 		zend_optimize_temporary_variables(op_array, ctx);
 		if (ctx->debug_level & ZEND_DUMP_AFTER_PASS_9) {
 			zend_dump_op_array(op_array, 0, "after pass 9", NULL);
@@ -1462,8 +1474,7 @@ static void zend_redo_pass_two_ex(zend_op_array *op_array, const zend_ssa *ssa)
 static void zend_optimize_op_array(zend_op_array      *op_array,
                                    zend_optimizer_ctx *ctx)
 {
-	/* Scope function op_arrays use negative var offsets incompatible with the optimizer */
-	if (op_array->fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
+	if (zend_op_array_is_scope_fn(op_array)) {
 		return;
 	}
 
@@ -1633,7 +1644,7 @@ ZEND_API void zend_optimize_script(zend_script *script, zend_long optimization_l
 		zend_func_info *func_info;
 
 		for (i = 0; i < call_graph.op_arrays_count; i++) {
-			if (call_graph.op_arrays[i]->fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
+			if (zend_op_array_is_scope_fn(call_graph.op_arrays[i])) {
 				continue;
 			}
 			zend_revert_pass_two(call_graph.op_arrays[i]);
@@ -1653,7 +1664,10 @@ ZEND_API void zend_optimize_script(zend_script *script, zend_long optimization_l
 		}
 
 		for (i = 0; i < call_graph.op_arrays_count; i++) {
-			if (zend_op_array_is_scope_fn_related(call_graph.op_arrays[i])) {
+			/* DFA on parents would mark scope_ed-reserved TMPs as unused;
+			 * subsequent dfa_optimize could rewrite/remove them. */
+			if (zend_op_array_is_scope_fn(call_graph.op_arrays[i])
+			 || zend_op_array_has_reserved_tmps(call_graph.op_arrays[i])) {
 				continue;
 			}
 			func_info = ZEND_FUNC_INFO(call_graph.op_arrays[i]);
@@ -1668,6 +1682,10 @@ ZEND_API void zend_optimize_script(zend_script *script, zend_long optimization_l
 
 		//TODO: perform inner-script inference???
 		for (i = 0; i < call_graph.op_arrays_count; i++) {
+			if (zend_op_array_is_scope_fn(call_graph.op_arrays[i])
+			 || zend_op_array_has_reserved_tmps(call_graph.op_arrays[i])) {
+				continue;
+			}
 			func_info = ZEND_FUNC_INFO(call_graph.op_arrays[i]);
 			if (func_info) {
 				zend_dfa_optimize_op_array(call_graph.op_arrays[i], &ctx, &func_info->ssa, func_info->call_map);
@@ -1682,7 +1700,10 @@ ZEND_API void zend_optimize_script(zend_script *script, zend_long optimization_l
 
 		if (ZEND_OPTIMIZER_PASS_9 & optimization_level) {
 			for (i = 0; i < call_graph.op_arrays_count; i++) {
-				if (zend_op_array_is_scope_fn_related(call_graph.op_arrays[i])) {
+				/* compact_temporaries renumbers TMPs — would shift the reserved
+				 * scope_ed slots out of place. */
+				if (zend_op_array_is_scope_fn(call_graph.op_arrays[i])
+				 || zend_op_array_has_reserved_tmps(call_graph.op_arrays[i])) {
 					continue;
 				}
 				zend_optimize_temporary_variables(call_graph.op_arrays[i], &ctx);
@@ -1694,7 +1715,10 @@ ZEND_API void zend_optimize_script(zend_script *script, zend_long optimization_l
 
 		if (ZEND_OPTIMIZER_PASS_11 & optimization_level) {
 			for (i = 0; i < call_graph.op_arrays_count; i++) {
-				if (zend_op_array_is_scope_fn_related(call_graph.op_arrays[i])) {
+				/* compact_literals on the scope-fn op_array would reorder the
+				 * param→parent-CV mapping literals. Parents are fine — their
+				 * literal pool is independent of the scope_ed layout. */
+				if (zend_op_array_is_scope_fn(call_graph.op_arrays[i])) {
 					continue;
 				}
 				zend_optimizer_compact_literals(call_graph.op_arrays[i], &ctx);
@@ -1706,7 +1730,10 @@ ZEND_API void zend_optimize_script(zend_script *script, zend_long optimization_l
 
 		if (ZEND_OPTIMIZER_PASS_13 & optimization_level) {
 			for (i = 0; i < call_graph.op_arrays_count; i++) {
-				if (zend_op_array_is_scope_fn_related(call_graph.op_arrays[i])) {
+				/* compact_vars removes unused TMPs/CVs — the reserved scope_ed
+				 * TMPs look unused but mustn't be removed. */
+				if (zend_op_array_is_scope_fn(call_graph.op_arrays[i])
+				 || zend_op_array_has_reserved_tmps(call_graph.op_arrays[i])) {
 					continue;
 				}
 				zend_optimizer_compact_vars(call_graph.op_arrays[i]);
@@ -1724,7 +1751,7 @@ ZEND_API void zend_optimize_script(zend_script *script, zend_long optimization_l
 
 		for (i = 0; i < call_graph.op_arrays_count; i++) {
 			op_array = call_graph.op_arrays[i];
-			if (op_array->fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
+			if (zend_op_array_is_scope_fn(op_array)) {
 				continue; /* Never reverted, so don't redo */
 			}
 			func_info = ZEND_FUNC_INFO(op_array);

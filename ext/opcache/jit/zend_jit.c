@@ -3438,6 +3438,13 @@ int zend_jit_script(zend_script *script)
 		}
 	} else if (JIT_G(trigger) == ZEND_JIT_ON_SCRIPT_LOAD) {
 		for (i = 0; i < call_graph.op_arrays_count; i++) {
+			/* Scope-fn op_arrays use negative offsets and parents reserve
+			 * fixed TMPs — both confuse SSA construction. Drop FUNC_INFO so
+			 * the subsequent analyze2/zend_jit loops naturally skip them. */
+			if (call_graph.op_arrays[i]->fn_flags2 & (ZEND_ACC2_SCOPE_FUNC | ZEND_ACC2_HAS_TRACKED_TEMPORARIES)) {
+				ZEND_SET_FUNC_INFO(call_graph.op_arrays[i], NULL);
+				continue;
+			}
 			info = ZEND_FUNC_INFO(call_graph.op_arrays[i]);
 			if (info) {
 				if (zend_jit_op_array_analyze1(call_graph.op_arrays[i], script, &info->ssa) != SUCCESS) {
