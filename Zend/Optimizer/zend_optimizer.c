@@ -1160,13 +1160,13 @@ static void zend_optimize(zend_op_array      *op_array,
 	/* pass 11:
 	 * - Compact literals table
 	 *
-	 * Skipped for scope-fn op_arrays: ENTER_SCOPE_FUNC's op2.num pins a
-	 * contiguous run of N IS_LONG literals (parameter→parent-CV mapping)
-	 * that compact_literals would dedupe and reorder. Re-enabling needs a
-	 * "pinned literal range" concept in compact_literals. */
+	 * compact_literals pins ENTER_SCOPE_FUNC's parameter→parent-CV
+	 * literal run via the LITERAL_INFO_PIN marker so the contiguous
+	 * layout that zend_scope_fn_get_arg_zval depends on survives the
+	 * dedup/reorder pass. */
 	if ((ZEND_OPTIMIZER_PASS_11 & ctx->optimization_level) &&
 	    (!(ZEND_OPTIMIZER_PASS_6 & ctx->optimization_level) ||
-	     !(ZEND_OPTIMIZER_PASS_7 & ctx->optimization_level)) && !is_scope_fn) {
+	     !(ZEND_OPTIMIZER_PASS_7 & ctx->optimization_level))) {
 		zend_optimizer_compact_literals(op_array, ctx);
 		if (ctx->debug_level & ZEND_DUMP_AFTER_PASS_11) {
 			zend_dump_op_array(op_array, 0, "after pass 11", NULL);
