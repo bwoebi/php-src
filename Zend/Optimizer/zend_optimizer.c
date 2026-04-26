@@ -1048,11 +1048,14 @@ zend_op *zend_optimizer_get_loop_var_def(const zend_op_array *op_array, zend_op 
 	return NULL;
 }
 
-/* Scope-fn op_arrays: their bodies reference parent CV indices encoded as
- * positive byte offsets that look out-of-range from the scope-fn's own var
- * table — the optimizer's per-op_array passes can't reason about them. The
- * parent's revert_pass_two/redo_pass_two handles their fixup, so leaving
- * them untouched between the two is correct. */
+/* Scope-fn op_arrays: in their compiled body, IS_CV/IS_TMP/IS_VAR `var`
+ * fields carry an offset that points into the parent's frame; the values
+ * fall outside `op_array->vars[]` and `T`. Passes that read/index those
+ * tables must be skipped. Pass 11 must also be skipped because
+ * ENTER_SCOPE_FUNC requires its parameter→parent-CV literal mapping to
+ * stay consecutive at a fixed start index, which compact_literals would
+ * break. Pass 10 must be skipped to preserve compile-time live_range
+ * opnums (recalc is unsafe under the offset encoding). */
 static zend_always_inline bool zend_op_array_is_scope_fn(const zend_op_array *op_array) {
 	return (op_array->fn_flags2 & ZEND_ACC2_SCOPE_FUNC) != 0;
 }
@@ -1064,9 +1067,7 @@ static void zend_optimize(zend_op_array      *op_array,
 		return;
 	}
 
-	if (zend_op_array_is_scope_fn(op_array)) {
-		return;
-	}
+	bool is_scope_fn = zend_op_array_is_scope_fn(op_array);
 
 	if (ctx->debug_level & ZEND_DUMP_BEFORE_OPTIMIZER) {
 		zend_dump_op_array(op_array, ZEND_DUMP_LIVE_RANGES, "before optimizer", NULL);
@@ -1110,7 +1111,7 @@ static void zend_optimize(zend_op_array      *op_array,
 	/* pass 5:
 	 * - CFG optimization
 	 */
-	if (ZEND_OPTIMIZER_PASS_5 & ctx->optimization_level) {
+	if ((ZEND_OPTIMIZER_PASS_5 & ctx->optimization_level) && !is_scope_fn) {
 		zend_optimize_cfg(op_array, ctx);
 		if (ctx->debug_level & ZEND_DUMP_AFTER_PASS_5) {
 			zend_dump_op_array(op_array, 0, "after pass 5", NULL);
@@ -1121,7 +1122,7 @@ static void zend_optimize(zend_op_array      *op_array,
 	 * - DFA optimization
 	 */
 	if ((ZEND_OPTIMIZER_PASS_6 & ctx->optimization_level) &&
-	    !(ZEND_OPTIMIZER_PASS_7 & ctx->optimization_level)) {
+	    !(ZEND_OPTIMIZER_PASS_7 & ctx->optimization_level) && !is_scope_fn) {
 		zend_optimize_dfa(op_array, ctx);
 		if (ctx->debug_level & ZEND_DUMP_AFTER_PASS_6) {
 			zend_dump_op_array(op_array, 0, "after pass 6", NULL);
@@ -1132,7 +1133,7 @@ static void zend_optimize(zend_op_array      *op_array,
 	 * - Optimize temp variables usage
 	 */
 	if ((ZEND_OPTIMIZER_PASS_9 & ctx->optimization_level) &&
-	    !(ZEND_OPTIMIZER_PASS_7 & ctx->optimization_level)) {
+	    !(ZEND_OPTIMIZER_PASS_7 & ctx->optimization_level) && !is_scope_fn) {
 		zend_optimize_temporary_variables(op_array, ctx);
 		if (ctx->debug_level & ZEND_DUMP_AFTER_PASS_9) {
 			zend_dump_op_array(op_array, 0, "after pass 9", NULL);
@@ -1142,7 +1143,8 @@ static void zend_optimize(zend_op_array      *op_array,
 	/* pass 10:
 	 * - remove NOPs
 	 */
-	if (((ZEND_OPTIMIZER_PASS_10|ZEND_OPTIMIZER_PASS_5) & ctx->optimization_level) == ZEND_OPTIMIZER_PASS_10) {
+	if (((ZEND_OPTIMIZER_PASS_10|ZEND_OPTIMIZER_PASS_5) & ctx->optimization_level) == ZEND_OPTIMIZER_PASS_10
+	    && !is_scope_fn) {
 		zend_optimizer_nop_removal(op_array, ctx);
 		if (ctx->debug_level & ZEND_DUMP_AFTER_PASS_10) {
 			zend_dump_op_array(op_array, 0, "after pass 10", NULL);
@@ -1154,7 +1156,7 @@ static void zend_optimize(zend_op_array      *op_array,
 	 */
 	if ((ZEND_OPTIMIZER_PASS_11 & ctx->optimization_level) &&
 	    (!(ZEND_OPTIMIZER_PASS_6 & ctx->optimization_level) ||
-	     !(ZEND_OPTIMIZER_PASS_7 & ctx->optimization_level))) {
+	     !(ZEND_OPTIMIZER_PASS_7 & ctx->optimization_level)) && !is_scope_fn) {
 		zend_optimizer_compact_literals(op_array, ctx);
 		if (ctx->debug_level & ZEND_DUMP_AFTER_PASS_11) {
 			zend_dump_op_array(op_array, 0, "after pass 11", NULL);
@@ -1468,10 +1470,6 @@ static void zend_redo_pass_two_ex(zend_op_array *op_array, const zend_ssa *ssa)
 static void zend_optimize_op_array(zend_op_array      *op_array,
                                    zend_optimizer_ctx *ctx)
 {
-	if (zend_op_array_is_scope_fn(op_array)) {
-		return;
-	}
-
 	/* Revert pass_two() */
 	zend_revert_pass_two(op_array);
 
@@ -1481,7 +1479,11 @@ static void zend_optimize_op_array(zend_op_array      *op_array,
 	/* Redo pass_two() */
 	zend_redo_pass_two(op_array);
 
-	if (op_array->live_range) {
+	/* Live-range recalc indexes by EX_VAR_TO_NUM into a T-sized table —
+	 * unsafe for scope-fn op_arrays whose body operands carry the parent-
+	 * frame offset. The unmodified compile-time live_range stays correct
+	 * because the safe passes don't shift opcodes. */
+	if (op_array->live_range && !zend_op_array_is_scope_fn(op_array)) {
 		zend_recalc_live_ranges(op_array, NULL);
 	}
 }
@@ -1747,6 +1749,22 @@ ZEND_API void zend_optimize_script(zend_script *script, zend_long optimization_l
 					zend_recalc_live_ranges(op_array, NULL);
 				}
 			}
+		}
+
+		/* Run the safe optimizer passes on scope-fn op_arrays AFTER the
+		 * non-scope-fn redo above. The redo's recursive
+		 * zend_fixup_scope_func_offsets relies on each scope-fn's own
+		 * DECLARE_SCOPE_FUNC.extended_value being intact, but a scope-fn
+		 * parent's revert resets its child DECLARE.extended_value to 0.
+		 * Doing the scope-fn revert+optimize+redo cycle as one unit per
+		 * op_array, after the outer redo has finished re-encoding the
+		 * scope-fn bodies, keeps that invariant. */
+		for (i = 0; i < call_graph.op_arrays_count; i++) {
+			op_array = call_graph.op_arrays[i];
+			if (!zend_op_array_is_scope_fn(op_array)) {
+				continue;
+			}
+			zend_optimize_op_array(op_array, &ctx);
 		}
 
 		/* PASS_12 reads callee->T to compute INIT_FCALL stack sizes; that
