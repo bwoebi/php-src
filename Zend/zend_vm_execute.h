@@ -1343,6 +1343,12 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV 
 		} else /* if (call_kind == ZEND_CALL_TOP_CODE) */ {
 			zend_array *symbol_table = EX(symbol_table);
 
+			/* The top-level script frame can hold tracked temporaries when
+			 * the script declared scope-fn closures at file scope; clean
+			 * them up so escaped closures get the parent-exit treatment
+			 * before the symbol table is detached. */
+			zend_vm_stack_free_tracked_temporaries(call_info, execute_data);
+
 			if (EX(func)->op_array.last_var > 0) {
 				zend_detach_symbol_table(execute_data);
 				call_info |= ZEND_CALL_NEEDS_REATTACH;
@@ -54457,6 +54463,12 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV  zend
 			ZEND_VM_RETURN();
 		} else /* if (call_kind == ZEND_CALL_TOP_CODE) */ {
 			zend_array *symbol_table = EX(symbol_table);
+
+			/* The top-level script frame can hold tracked temporaries when
+			 * the script declared scope-fn closures at file scope; clean
+			 * them up so escaped closures get the parent-exit treatment
+			 * before the symbol table is detached. */
+			zend_vm_stack_free_tracked_temporaries(call_info, execute_data);
 
 			if (EX(func)->op_array.last_var > 0) {
 				zend_detach_symbol_table(execute_data);
@@ -111118,6 +111130,12 @@ zend_leave_helper_SPEC_LABEL:
 			ZEND_VM_RETURN();
 		} else /* if (call_kind == ZEND_CALL_TOP_CODE) */ {
 			zend_array *symbol_table = EX(symbol_table);
+
+			/* The top-level script frame can hold tracked temporaries when
+			 * the script declared scope-fn closures at file scope; clean
+			 * them up so escaped closures get the parent-exit treatment
+			 * before the symbol table is detached. */
+			zend_vm_stack_free_tracked_temporaries(call_info, execute_data);
 
 			if (EX(func)->op_array.last_var > 0) {
 				zend_detach_symbol_table(execute_data);
