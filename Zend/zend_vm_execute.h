@@ -33135,17 +33135,18 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_DECLARE_SCOPE
 	zend_create_closure(EX_VAR(opline->result.var), func,
 		EX(func)->op_array.scope, called_scope, object);
 
-	/* The closure's this_ptr stashes the top-level parent's execute_data and a
-	 * recursion guard (Z_EXTRA). For nested scope fns, follow the chain to
-	 * the top-level parent — that's where the shared CVs live. */
+	/* For nested scope fns, the top-level parent (where shared CVs live) is
+	 * recovered through our own scope_ed's stash; otherwise execute_data is
+	 * already the top-level parent. */
+	zend_execute_data *parent_ex = (EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)
+		? zend_scope_fn_parent_ed(execute_data)
+		: execute_data;
+
+	/* The closure's this_ptr stashes the parent execute_data and a
+	 * recursion guard (Z_EXTRA). */
 	{
 		zval *this_ptr = zend_closure_get_this_ptr_ptr(Z_OBJ_P(EX_VAR(opline->result.var)));
-		zend_execute_data *parent = execute_data;
-		if (EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
-			zval *our_this_ptr = zend_closure_get_this_ptr_ptr(ZEND_CLOSURE_OBJECT(EX(func)));
-			parent = (zend_execute_data *)Z_PTR_P(our_this_ptr);
-		}
-		Z_PTR_P(this_ptr) = parent;
+		Z_PTR_P(this_ptr) = parent_ex;
 		Z_EXTRA_P(this_ptr) = 0;
 		Z_TYPE_INFO_P(this_ptr) = IS_PTR;
 	}
@@ -33155,11 +33156,6 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_DECLARE_SCOPE
 	 * replace the existing entry rather than pushing a duplicate.
 	 * Z_EXTRA layout per entry: bits 0-7 = mode, bits 8-23 = func_def index. */
 	{
-		zend_execute_data *parent_ex = execute_data;
-		if (EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
-			zval *our_tp = zend_closure_get_this_ptr_ptr(ZEND_CLOSURE_OBJECT(EX(func)));
-			parent_ex = (zend_execute_data *)Z_PTR_P(our_tp);
-		}
 		const zend_op_array *parent_op = &parent_ex->func->op_array;
 		zval *base = ZEND_CALL_VAR_NUM(parent_ex, parent_op->last_var + parent_op->T - 1);
 
@@ -85938,17 +85934,18 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_DECLARE_SCOPE_FUNC
 	zend_create_closure(EX_VAR(opline->result.var), func,
 		EX(func)->op_array.scope, called_scope, object);
 
-	/* The closure's this_ptr stashes the top-level parent's execute_data and a
-	 * recursion guard (Z_EXTRA). For nested scope fns, follow the chain to
-	 * the top-level parent — that's where the shared CVs live. */
+	/* For nested scope fns, the top-level parent (where shared CVs live) is
+	 * recovered through our own scope_ed's stash; otherwise execute_data is
+	 * already the top-level parent. */
+	zend_execute_data *parent_ex = (EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)
+		? zend_scope_fn_parent_ed(execute_data)
+		: execute_data;
+
+	/* The closure's this_ptr stashes the parent execute_data and a
+	 * recursion guard (Z_EXTRA). */
 	{
 		zval *this_ptr = zend_closure_get_this_ptr_ptr(Z_OBJ_P(EX_VAR(opline->result.var)));
-		zend_execute_data *parent = execute_data;
-		if (EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
-			zval *our_this_ptr = zend_closure_get_this_ptr_ptr(ZEND_CLOSURE_OBJECT(EX(func)));
-			parent = (zend_execute_data *)Z_PTR_P(our_this_ptr);
-		}
-		Z_PTR_P(this_ptr) = parent;
+		Z_PTR_P(this_ptr) = parent_ex;
 		Z_EXTRA_P(this_ptr) = 0;
 		Z_TYPE_INFO_P(this_ptr) = IS_PTR;
 	}
@@ -85958,11 +85955,6 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_DECLARE_SCOPE_FUNC
 	 * replace the existing entry rather than pushing a duplicate.
 	 * Z_EXTRA layout per entry: bits 0-7 = mode, bits 8-23 = func_def index. */
 	{
-		zend_execute_data *parent_ex = execute_data;
-		if (EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
-			zval *our_tp = zend_closure_get_this_ptr_ptr(ZEND_CLOSURE_OBJECT(EX(func)));
-			parent_ex = (zend_execute_data *)Z_PTR_P(our_tp);
-		}
 		const zend_op_array *parent_op = &parent_ex->func->op_array;
 		zval *base = ZEND_CALL_VAR_NUM(parent_ex, parent_op->last_var + parent_op->T - 1);
 

@@ -1132,24 +1132,9 @@ zend_jit_trace_stop ZEND_FASTCALL zend_jit_trace_execute(zend_execute_data  *ex,
 					break;
 				}
 
-				if (EX(func)->op_array.fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
+				if (EX(func)->op_array.fn_flags2 & (ZEND_ACC2_SCOPE_FUNC | ZEND_ACC2_HAS_TRACKED_TEMPORARIES)) {
 					stop = ZEND_JIT_TRACE_STOP_INTERPRETER;
 					break;
-				}
-
-				/* Also stop for functions containing scope func declarations */
-				{
-					bool has_scope_func = false;
-					for (uint32_t sf = 0; sf < EX(func)->op_array.last; sf++) {
-						if (EX(func)->op_array.opcodes[sf].opcode == ZEND_DECLARE_SCOPE_FUNC) {
-							has_scope_func = true;
-							break;
-						}
-					}
-					if (has_scope_func) {
-						stop = ZEND_JIT_TRACE_STOP_INTERPRETER;
-						break;
-					}
 				}
 
 				TRACE_RECORD(ZEND_JIT_TRACE_ENTER,

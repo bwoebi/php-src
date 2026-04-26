@@ -545,6 +545,15 @@ static zend_always_inline uint32_t zend_scope_fn_first_literal(const zend_op_arr
 	ZEND_UNREACHABLE();
 }
 
+/* For a scope-fn frame (ZEND_ACC2_SCOPE_FUNC): return the top-level parent
+ * execute_data, recovered from the closure's stash. NULL if the parent has
+ * already exited (lifetime error). */
+static zend_always_inline zend_execute_data *zend_scope_fn_parent_ed(const zend_execute_data *scope_ed)
+{
+	zval *this_ptr = zend_closure_get_this_ptr_ptr(ZEND_CLOSURE_OBJECT(scope_ed->func));
+	return (zend_execute_data *)Z_PTR_P(this_ptr);
+}
+
 /* Resolve a scope-fn's i-th argument zval. For declared params (i < num_args)
  * the slot lives in the parent's CV table via the literal mapping; for extras
  * it lives at the tail of the original call frame. Returns NULL if the parent
@@ -556,8 +565,7 @@ static zend_always_inline zval *zend_scope_fn_get_arg_zval(
 {
 	const zend_op_array *op_array = &scope_ed->func->op_array;
 	if (i < op_array->num_args) {
-		zval *this_ptr = zend_closure_get_this_ptr_ptr(ZEND_CLOSURE_OBJECT(scope_ed->func));
-		zend_execute_data *parent_ed = (zend_execute_data *)Z_PTR_P(this_ptr);
+		zend_execute_data *parent_ed = zend_scope_fn_parent_ed(scope_ed);
 		if (UNEXPECTED(!parent_ed)) {
 			return NULL;
 		}

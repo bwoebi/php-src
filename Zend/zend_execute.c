@@ -282,12 +282,9 @@ static zend_never_inline ZEND_COLD zval* zval_undefined_cv(uint32_t var EXECUTE_
 			 * point at parent CV slots; the scope-fn's own op_array.vars
 			 * does not hold those names. Recover parent_ed via the closure
 			 * stash and read the var name from the parent's op_array. */
-			zend_object *closure_obj = ZEND_CLOSURE_OBJECT(EX(func));
-			zval *this_ptr = zend_closure_get_this_ptr_ptr(closure_obj);
-			zend_execute_data *parent_ed = (zend_execute_data *)Z_PTR_P(this_ptr);
+			zend_execute_data *parent_ed = zend_scope_fn_parent_ed(execute_data);
 			uint32_t scope_ed_offset = (uint32_t)((char *)execute_data - (char *)parent_ed);
-			uint32_t parent_var = var + scope_ed_offset;
-			cv = parent_ed->func->op_array.vars[EX_VAR_TO_NUM(parent_var)];
+			cv = parent_ed->func->op_array.vars[EX_VAR_TO_NUM(var + scope_ed_offset)];
 		} else {
 			cv = CV_DEF_OF(EX_VAR_TO_NUM(var));
 		}

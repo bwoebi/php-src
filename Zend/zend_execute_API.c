@@ -1807,18 +1807,15 @@ ZEND_API zend_array *zend_rebuild_symbol_table(void) /* {{{ */
 		return NULL;
 	}
 
-	/* For scope functions, build the symbol table on the parent frame instead.
-	 * All CVs are shared with the parent. */
+	/* Scope functions share CVs with their parent — rebuild on the parent
+	 * frame and adopt the result. */
 	if (ex->func->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
-		zval *this_ptr = zend_closure_get_this_ptr_ptr(ZEND_CLOSURE_OBJECT(ex->func));
-		zend_execute_data *parent_ed = (zend_execute_data *)Z_PTR_P(this_ptr);
+		zend_execute_data *parent_ed = zend_scope_fn_parent_ed(ex);
 		if (parent_ed) {
-			/* Rebuild on the parent instead */
 			zend_execute_data *saved = EG(current_execute_data);
 			EG(current_execute_data) = parent_ed;
 			symbol_table = zend_rebuild_symbol_table();
 			EG(current_execute_data) = saved;
-			/* Share the symbol table with the scope func frame */
 			ex->symbol_table = symbol_table;
 			ZEND_ADD_CALL_FLAG(ex, ZEND_CALL_HAS_SYMBOL_TABLE);
 			return symbol_table;
