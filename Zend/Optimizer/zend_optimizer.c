@@ -1050,12 +1050,15 @@ zend_op *zend_optimizer_get_loop_var_def(const zend_op_array *op_array, zend_op 
 
 /* Scope-fn op_arrays: in their compiled body, IS_CV/IS_TMP/IS_VAR `var`
  * fields carry an offset that points into the parent's frame; the values
- * fall outside `op_array->vars[]` and `T`. Passes that read/index those
- * tables must be skipped. Pass 11 must also be skipped because
- * ENTER_SCOPE_FUNC requires its parameter→parent-CV literal mapping to
- * stay consecutive at a fixed start index, which compact_literals would
- * break. Pass 10 must be skipped to preserve compile-time live_range
- * opnums (recalc is unsafe under the offset encoding). */
+ * fall outside `op_array->vars[]` and `T`. zend_optimize_op_array brackets
+ * us with zend_unfixup_scope_func_self / zend_refixup_scope_func_self so
+ * the body is in child-local form for the duration of the passes here.
+ *
+ * Two passes still need explicit skips even with the sandwich:
+ *   - pass 6/7 (DFA/SCCP): would DCE CV writes whose values flow through
+ *     the shared parent CV, which a single-op_array SSA cannot see.
+ *   - pass 11 (compact_literals): would dedupe/reorder the IS_LONG run
+ *     ENTER_SCOPE_FUNC pins at a fixed start index. */
 static zend_always_inline bool zend_op_array_is_scope_fn(const zend_op_array *op_array) {
 	return (op_array->fn_flags2 & ZEND_ACC2_SCOPE_FUNC) != 0;
 }
@@ -1111,7 +1114,7 @@ static void zend_optimize(zend_op_array      *op_array,
 	/* pass 5:
 	 * - CFG optimization
 	 */
-	if ((ZEND_OPTIMIZER_PASS_5 & ctx->optimization_level) && !is_scope_fn) {
+	if (ZEND_OPTIMIZER_PASS_5 & ctx->optimization_level) {
 		zend_optimize_cfg(op_array, ctx);
 		if (ctx->debug_level & ZEND_DUMP_AFTER_PASS_5) {
 			zend_dump_op_array(op_array, 0, "after pass 5", NULL);
@@ -1120,7 +1123,11 @@ static void zend_optimize(zend_op_array      *op_array,
 
 	/* pass 6:
 	 * - DFA optimization
-	 */
+	 *
+	 * Skipped for scope-fn op_arrays: DCE on a body's CV write would
+	 * eliminate a store the parent later reads, but single-op_array SSA
+	 * cannot see that. Re-enabling needs cross-op-array DCE protection
+	 * (treat every body CV write as live-out). */
 	if ((ZEND_OPTIMIZER_PASS_6 & ctx->optimization_level) &&
 	    !(ZEND_OPTIMIZER_PASS_7 & ctx->optimization_level) && !is_scope_fn) {
 		zend_optimize_dfa(op_array, ctx);
@@ -1133,7 +1140,7 @@ static void zend_optimize(zend_op_array      *op_array,
 	 * - Optimize temp variables usage
 	 */
 	if ((ZEND_OPTIMIZER_PASS_9 & ctx->optimization_level) &&
-	    !(ZEND_OPTIMIZER_PASS_7 & ctx->optimization_level) && !is_scope_fn) {
+	    !(ZEND_OPTIMIZER_PASS_7 & ctx->optimization_level)) {
 		zend_optimize_temporary_variables(op_array, ctx);
 		if (ctx->debug_level & ZEND_DUMP_AFTER_PASS_9) {
 			zend_dump_op_array(op_array, 0, "after pass 9", NULL);
@@ -1143,8 +1150,7 @@ static void zend_optimize(zend_op_array      *op_array,
 	/* pass 10:
 	 * - remove NOPs
 	 */
-	if (((ZEND_OPTIMIZER_PASS_10|ZEND_OPTIMIZER_PASS_5) & ctx->optimization_level) == ZEND_OPTIMIZER_PASS_10
-	    && !is_scope_fn) {
+	if (((ZEND_OPTIMIZER_PASS_10|ZEND_OPTIMIZER_PASS_5) & ctx->optimization_level) == ZEND_OPTIMIZER_PASS_10) {
 		zend_optimizer_nop_removal(op_array, ctx);
 		if (ctx->debug_level & ZEND_DUMP_AFTER_PASS_10) {
 			zend_dump_op_array(op_array, 0, "after pass 10", NULL);
@@ -1153,7 +1159,11 @@ static void zend_optimize(zend_op_array      *op_array,
 
 	/* pass 11:
 	 * - Compact literals table
-	 */
+	 *
+	 * Skipped for scope-fn op_arrays: ENTER_SCOPE_FUNC's op2.num pins a
+	 * contiguous run of N IS_LONG literals (parameter→parent-CV mapping)
+	 * that compact_literals would dedupe and reorder. Re-enabling needs a
+	 * "pinned literal range" concept in compact_literals. */
 	if ((ZEND_OPTIMIZER_PASS_11 & ctx->optimization_level) &&
 	    (!(ZEND_OPTIMIZER_PASS_6 & ctx->optimization_level) ||
 	     !(ZEND_OPTIMIZER_PASS_7 & ctx->optimization_level)) && !is_scope_fn) {
@@ -1470,22 +1480,53 @@ static void zend_redo_pass_two_ex(zend_op_array *op_array, const zend_ssa *ssa)
 static void zend_optimize_op_array(zend_op_array      *op_array,
                                    zend_optimizer_ctx *ctx)
 {
+	bool is_scope_fn = zend_op_array_is_scope_fn(op_array);
+
+	/* Sandwich open: revert the body's CV/TMP/VAR offset encoding so the
+	 * inner passes (which size bookkeeping by last_var + T) stay in
+	 * bounds. Done BEFORE revert_pass_two — revert decrements T to drop
+	 * this scope-fn's own nested reservations, but the body was encoded
+	 * with the pre-revert T, so we must capture that value here. */
+	uint32_t encoding_scope_T = is_scope_fn ? op_array->T : 0;
+	uint32_t saved_scope_ed_offset = is_scope_fn
+		? zend_unfixup_scope_func_self(op_array, encoding_scope_T)
+		: 0;
+
 	/* Revert pass_two() */
 	zend_revert_pass_two(op_array);
+
+	/* Pass 9 (temp-vars) may shrink T; the parent's reservation was sized
+	 * for actual_T_at_install, so we must end the sandwich with at least
+	 * that many TMP slots. Capture post-revert (pre-pass-9) T as the
+	 * floor: it equals the actual TMP count this scope-fn had at install
+	 * time (no own-reservations: revert just stripped those). */
+	uint32_t pre_optimize_T = op_array->T;
 
 	/* Do actual optimizations */
 	zend_optimize(op_array, ctx);
 
-	/* Redo pass_two() */
-	zend_redo_pass_two(op_array);
-
-	/* Live-range recalc indexes by EX_VAR_TO_NUM into a T-sized table —
-	 * unsafe for scope-fn op_arrays whose body operands carry the parent-
-	 * frame offset. The unmodified compile-time live_range stays correct
-	 * because the safe passes don't shift opcodes. */
-	if (op_array->live_range && !zend_op_array_is_scope_fn(op_array)) {
+	/* Recalc live_range while the body is still in child-local form so
+	 * `zend_calc_live_ranges`'s `last_use[T]` indexing stays in bounds.
+	 * Pass 5 / pass 10 invalidate live_range opnums; recalc reconstructs
+	 * them from the post-pass opcodes. */
+	if (op_array->live_range) {
 		zend_recalc_live_ranges(op_array, NULL);
 	}
+
+	/* Sandwich close: pad T back if pass 9 shrunk it (unused upper slots
+	 * sit inside the parent's reservation — harmless), then re-encode
+	 * body operands using the same scope_T the original fixup used. The
+	 * subsequent zend_redo_pass_two re-installs this scope-fn's own
+	 * nested reservations on top, restoring T to its pre-sandwich value. */
+	if (is_scope_fn) {
+		if (op_array->T < pre_optimize_T) {
+			op_array->T = pre_optimize_T;
+		}
+		zend_refixup_scope_func_self(op_array, saved_scope_ed_offset, encoding_scope_T);
+	}
+
+	/* Redo pass_two() */
+	zend_redo_pass_two(op_array);
 }
 
 static void zend_adjust_fcall_stack_size(const zend_op_array *op_array, const zend_optimizer_ctx *ctx)

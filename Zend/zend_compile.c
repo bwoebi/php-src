@@ -8975,6 +8975,122 @@ ZEND_API void zend_pass_two_revert_scope_fn_reservations(zend_op_array *op_array
 	 * a self-symmetric pair without depending on the flag's value. */
 }
 
+/* Self-contained un-fixup for an optimizer "sandwich" around a scope-fn
+ * op_array: temporarily revert the body's CV/TMP/VAR offset encoding so
+ * passes that index `op_array->last_var + T`-sized tables work without
+ * OOBs. Returns the recovered scope_ed_offset for symmetry with refixup.
+ *
+ * `scope_T` must match the value that was passed at the *original* fixup
+ * — i.e., `op_array->T` as it stood when the outer parent's pass_two
+ * encoded this body. The caller is responsible for tracking that value
+ * across `zend_revert_pass_two` (which decrements T to drop this scope-
+ * fn's own nested reservations) and across passes that mutate T.
+ *
+ * scope_ed_offset is recovered from ENTER_SCOPE_FUNC.extended_value,
+ * which the original fixup stored there. Does NOT recurse into nested
+ * scope-fn children: optimizer passes act on a single op_array, and
+ * nested children are processed by their own sandwich. */
+ZEND_API uint32_t zend_unfixup_scope_func_self(zend_op_array *scope_op, uint32_t scope_T)
+{
+	ZEND_ASSERT(scope_op->fn_flags2 & ZEND_ACC2_SCOPE_FUNC);
+
+	uint32_t scope_ed_offset = 0;
+	for (uint32_t i = 0; i < scope_op->last; i++) {
+		if (scope_op->opcodes[i].opcode == ZEND_ENTER_SCOPE_FUNC) {
+			scope_ed_offset = scope_op->opcodes[i].extended_value;
+			scope_op->opcodes[i].extended_value = 0;
+			break;
+		}
+	}
+
+	uint32_t num_params = scope_op->last_var;
+	uint32_t scope_frame_size = (uint32_t)((ZEND_CALL_FRAME_SLOT + num_params + scope_T) * sizeof(zval));
+
+	bool in_body = false;
+	for (uint32_t i = 0; i < scope_op->last; i++) {
+		zend_op *opline = &scope_op->opcodes[i];
+		if (opline->opcode == ZEND_ENTER_SCOPE_FUNC) {
+			in_body = true;
+			continue;
+		}
+		if (!in_body) {
+			continue;
+		}
+		if (opline->op1_type == IS_CV) {
+			opline->op1.var += scope_ed_offset;
+		} else if (opline->op1_type & (IS_VAR|IS_TMP_VAR)) {
+			opline->op1.var += scope_frame_size;
+		}
+		if (opline->op2_type == IS_CV) {
+			opline->op2.var += scope_ed_offset;
+		} else if (opline->op2_type & (IS_VAR|IS_TMP_VAR)) {
+			opline->op2.var += scope_frame_size;
+		}
+		if (opline->result_type == IS_CV) {
+			opline->result.var += scope_ed_offset;
+		} else if (opline->result_type & (IS_VAR|IS_TMP_VAR)) {
+			opline->result.var += scope_frame_size;
+		}
+	}
+
+	for (uint32_t i = 0; i < scope_op->last_live_range; i++) {
+		uint32_t kind = scope_op->live_range[i].var & ZEND_LIVE_MASK;
+		uint32_t var = scope_op->live_range[i].var & ~ZEND_LIVE_MASK;
+		var += scope_frame_size;
+		scope_op->live_range[i].var = var | kind;
+	}
+
+	return scope_ed_offset;
+}
+
+/* Inverse of zend_unfixup_scope_func_self. The caller must pass the same
+ * scope_ed_offset and scope_T that un-fixup used: those preserve the
+ * scope_ed's position inside the parent's frame (set up by the parent's
+ * pass_two reservation), so a pass like temp-vars that shrunk T does not
+ * shift body operands relative to the scope_ed at runtime. */
+ZEND_API void zend_refixup_scope_func_self(zend_op_array *scope_op, uint32_t scope_ed_offset, uint32_t scope_T)
+{
+	ZEND_ASSERT(scope_op->fn_flags2 & ZEND_ACC2_SCOPE_FUNC);
+
+	uint32_t num_params = scope_op->last_var;
+	uint32_t scope_frame_size = (uint32_t)((ZEND_CALL_FRAME_SLOT + num_params + scope_T) * sizeof(zval));
+
+	bool in_body = false;
+	for (uint32_t i = 0; i < scope_op->last; i++) {
+		zend_op *opline = &scope_op->opcodes[i];
+		if (opline->opcode == ZEND_ENTER_SCOPE_FUNC) {
+			in_body = true;
+			opline->extended_value = scope_ed_offset;
+			continue;
+		}
+		if (!in_body) {
+			continue;
+		}
+		if (opline->op1_type == IS_CV) {
+			opline->op1.var -= scope_ed_offset;
+		} else if (opline->op1_type & (IS_VAR|IS_TMP_VAR)) {
+			opline->op1.var -= scope_frame_size;
+		}
+		if (opline->op2_type == IS_CV) {
+			opline->op2.var -= scope_ed_offset;
+		} else if (opline->op2_type & (IS_VAR|IS_TMP_VAR)) {
+			opline->op2.var -= scope_frame_size;
+		}
+		if (opline->result_type == IS_CV) {
+			opline->result.var -= scope_ed_offset;
+		} else if (opline->result_type & (IS_VAR|IS_TMP_VAR)) {
+			opline->result.var -= scope_frame_size;
+		}
+	}
+
+	for (uint32_t i = 0; i < scope_op->last_live_range; i++) {
+		uint32_t kind = scope_op->live_range[i].var & ZEND_LIVE_MASK;
+		uint32_t var = scope_op->live_range[i].var & ~ZEND_LIVE_MASK;
+		var -= scope_frame_size;
+		scope_op->live_range[i].var = var | kind;
+	}
+}
+
 static zend_op_array *zend_compile_func_decl_ex(
 	znode *result, zend_ast *ast, enum func_decl_level level,
 	zend_string *property_info_name,

@@ -1021,6 +1021,16 @@ ZEND_API void zend_pass_two_install_scope_fn_reservations(zend_op_array *op_arra
  * slots, leaving the parent in its compile-time positive-offset form so
  * the optimizer can run any pass on it. Called from revert_pass_two. */
 ZEND_API void zend_pass_two_revert_scope_fn_reservations(zend_op_array *op_array);
+
+/* Self-contained un-fixup / re-fixup pair for a single scope-fn op_array,
+ * intended to bracket optimizer passes whose bookkeeping arrays are sized
+ * by `op_array->last_var + T`. The caller passes the scope_T that was
+ * used at the *original* fixup (i.e., op_array->T as the outer parent's
+ * pass_two saw it), and re-fixup must use the same value so the scope_ed
+ * stays at the same position in the parent's frame. Un-fixup returns the
+ * recovered scope_ed_offset; pass it back to refixup unchanged. */
+ZEND_API uint32_t zend_unfixup_scope_func_self(zend_op_array *scope_op, uint32_t scope_T);
+ZEND_API void zend_refixup_scope_func_self(zend_op_array *scope_op, uint32_t scope_ed_offset, uint32_t scope_T);
 ZEND_API bool zend_is_compiling(void);
 ZEND_API char *zend_make_compiled_string_description(const char *name);
 ZEND_API void zend_initialize_class_data(zend_class_entry *ce, bool nullify_handlers);
