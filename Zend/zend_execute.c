@@ -5000,9 +5000,32 @@ ZEND_API void zend_vm_stack_free_tracked_temporaries_ex(zend_execute_data *call)
 			 * ref to the closure guarantees we are in `if (escaped)`. */
 			zend_object **attached_object_ptr =
 				zend_closure_get_attached_object_ptr(Z_OBJ_P(entry));
+			zend_fiber *unwind_fiber = NULL;
+
 			if (UNEXPECTED(*attached_object_ptr != NULL
 			            && (*attached_object_ptr)->ce == zend_ce_fiber)) {
-				zend_fiber *fiber = (zend_fiber *)*attached_object_ptr;
+				/* Cross-stack scope-fn body running directly in a fiber. */
+				unwind_fiber = (zend_fiber *)*attached_object_ptr;
+			} else if (UNEXPECTED(*attached_object_ptr != NULL
+			                   && (*attached_object_ptr)->ce == zend_ce_generator)) {
+				/* Generator pinned to scope_ed. If a fiber is suspended
+				 * inside the generator's body, that fiber's saved chain
+				 * crosses through scope_ed (in our parent's frame) and
+				 * would dangle once we free it — drive the fiber forward
+				 * through scope_ed first so its chain detaches from
+				 * there. The generator itself is closed below. */
+				zend_generator *gen = (zend_generator *) *attached_object_ptr;
+				if (gen->fiber_running_me != NULL) {
+					zend_fiber *fiber = (zend_fiber *)gen->fiber_running_me;
+					if (fiber->context.status == ZEND_FIBER_STATUS_SUSPENDED
+					 && fiber->caller == NULL) {
+						unwind_fiber = fiber;
+					}
+				}
+			}
+
+			if (unwind_fiber != NULL) {
+				zend_fiber *fiber = unwind_fiber;
 				/* Snapshot which parent CVs are UNDEF before force-unwind:
 				 * the unwind may run scope-fn body code that assigns to
 				 * our CVs (catch variables, etc). i_free_compiled_variables
@@ -5033,29 +5056,19 @@ ZEND_API void zend_vm_stack_free_tracked_temporaries_ex(zend_execute_data *call)
 				}
 				ZEND_ASSERT(target != NULL);
 
-				/* Build the Error object manually, without going
-				 * through zend_throw_exception_internal — that path
-				 * mutates EG(current_execute_data)->opline and
-				 * EG(opline_before_exception), which the fiber's
-				 * later zend_clear_exception would clobber, leaving
-				 * our own outer-frame's opline state inconsistent
-				 * for the caller's HANDLE_EXCEPTION dispatch. We
-				 * just need a Throwable to inject into the fiber. */
+				/* The visible escape Error is stashed on the fiber by
+				 * the fiber-side scope-fn boundary handler (inside
+				 * leave_helper or zend_generator_close), so its
+				 * stacktrace reflects the scope_fn / gen body context. */
+				ZEND_ASSERT(fiber->pending_resume_throw == NULL);
 				zend_object *prev_exception = EG(exception);
-				zval exc_zv;
-				object_init_ex(&exc_zv, zend_ce_error);
-				zval msg_zv;
-				ZVAL_STRING(&msg_zv, "Scope function closure must not outlive the declaring scope");
-				zend_update_property_ex(zend_ce_error, Z_OBJ(exc_zv),
-					ZSTR_KNOWN(ZEND_STR_MESSAGE), &msg_zv);
-				zval_ptr_dtor(&msg_zv);
-				zend_object *exc = Z_OBJ(exc_zv);
 
-				/* deferred_exception: leave_helper transfers EG(exception)'s
-				 * ref into this slot at the boundary, so we keep ONE extra
-				 * ref here that gets released by that transfer. The ref
-				 * carried in the resume-injected zval covers the in-flight
-				 * exception itself. */
+				/* Internal sentinel: triggers finally blocks in the
+				 * scope-fn body, then is swallowed at the scope-fn
+				 * boundary. Held in deferred_exception so
+				 * zend_fiber_block_suspend_for_forced_unwind can
+				 * re-inject it if a finally block calls Fiber::suspend. */
+				zend_object *exc = zend_create_scope_fn_unwind();
 				GC_ADDREF(exc);
 				fiber->deferred_exception = exc;
 				fiber->forced_unwind_target = target;
@@ -5067,7 +5080,6 @@ ZEND_API void zend_vm_stack_free_tracked_temporaries_ex(zend_execute_data *call)
 					zend_fiber_force_unwind_resume(fiber, &thrown);
 				zval_ptr_dtor(&thrown);
 
-				ZEND_ASSERT(*attached_object_ptr == NULL);
 				ZEND_ASSERT(fiber->forced_unwind_target == NULL);
 
 				/* Clean up any parent CVs that were assigned during the
@@ -5088,22 +5100,29 @@ ZEND_API void zend_vm_stack_free_tracked_temporaries_ex(zend_execute_data *call)
 				}
 
 				if (transfer.flags & ZEND_FIBER_TRANSFER_FLAG_ERROR) {
-					EG(exception) = Z_OBJ(transfer.value);
-					if (prev_exception) {
-						zend_exception_set_previous(EG(exception), prev_exception);
+					/* Don't re-raise the sentinel above the scope-fn —
+					 * it's an internal marker, not user-visible. */
+					if (zend_is_scope_fn_unwind(Z_OBJ(transfer.value))) {
+						zval_ptr_dtor(&transfer.value);
+						EG(exception) = prev_exception;
+					} else {
+						EG(exception) = Z_OBJ(transfer.value);
+						if (prev_exception) {
+							zend_exception_set_previous(EG(exception), prev_exception);
+						}
 					}
 				} else {
 					zval_ptr_dtor(&transfer.value);
 					EG(exception) = prev_exception;
 				}
-			} else if (UNEXPECTED(*attached_object_ptr != NULL
-			                   && (*attached_object_ptr)->ce == zend_ce_generator)) {
-				/* Force-destruct the generator. zend_generator_close's
-				 * scope-fn branch runs the cleanup_unfinished_execution
-				 * (if the generator was suspended mid-yield) and
-				 * detaches attached_object. The closure's CALL_CLOSURE
-				 * ref is released by zend_generator_free_storage when
-				 * the generator object's refcount drops to zero. */
+			}
+
+			/* Whatever was attached, finalize it. The fiber-attached
+			 * unwind detached the closure via leave_helper. The
+			 * generator-attached case (with or without a fiber inside)
+			 * still needs its generator closed. */
+			if (*attached_object_ptr != NULL
+			 && (*attached_object_ptr)->ce == zend_ce_generator) {
 				zend_generator *gen = (zend_generator *) *attached_object_ptr;
 				zend_generator_close(gen, false);
 			}

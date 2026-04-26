@@ -8827,6 +8827,154 @@ static void zend_fixup_scope_func_offsets(
 	}
 }
 
+/* Inverse of zend_fixup_scope_func_offsets: restore body opcodes to the
+ * positive-offset form they had right after compilation. Reads scope_T,
+ * num_params from `scope_op` and uses the supplied `parent_last_var` /
+ * `T_base` (mirroring the values the original fixup was called with) to
+ * reconstruct the offsets it originally subtracted, then adds them back. */
+static void zend_unfixup_scope_func_offsets(
+	zend_op_array *scope_op,
+	uint32_t parent_last_var,
+	uint32_t T_base,
+	uint32_t scope_T
+) {
+	uint32_t num_params = scope_op->last_var;
+	uint32_t scope_ed_offset = (uint32_t)((ZEND_CALL_FRAME_SLOT + parent_last_var + T_base + scope_T) * sizeof(zval));
+	uint32_t scope_frame_size = (uint32_t)((ZEND_CALL_FRAME_SLOT + num_params + scope_T) * sizeof(zval));
+
+	bool in_body = false;
+	for (uint32_t i = 0; i < scope_op->last; i++) {
+		zend_op *opline = &scope_op->opcodes[i];
+
+		if (opline->opcode == ZEND_ENTER_SCOPE_FUNC) {
+			in_body = true;
+			opline->extended_value = 0;
+			continue;
+		}
+
+		if (!in_body) {
+			continue;
+		}
+
+		if (opline->op1_type == IS_CV) {
+			opline->op1.var += scope_ed_offset;
+		} else if (opline->op1_type & (IS_VAR|IS_TMP_VAR)) {
+			opline->op1.var += scope_frame_size;
+		}
+
+		if (opline->op2_type == IS_CV) {
+			opline->op2.var += scope_ed_offset;
+		} else if (opline->op2_type & (IS_VAR|IS_TMP_VAR)) {
+			opline->op2.var += scope_frame_size;
+		}
+
+		if (opline->result_type == IS_CV) {
+			opline->result.var += scope_ed_offset;
+		} else if (opline->result_type & (IS_VAR|IS_TMP_VAR)) {
+			opline->result.var += scope_frame_size;
+		}
+	}
+
+	for (uint32_t i = 0; i < scope_op->last_live_range; i++) {
+		uint32_t kind = scope_op->live_range[i].var & ZEND_LIVE_MASK;
+		uint32_t var = scope_op->live_range[i].var & ~ZEND_LIVE_MASK;
+		var += scope_frame_size;
+		scope_op->live_range[i].var = var | kind;
+	}
+
+	for (uint32_t i = 0; i < scope_op->num_dynamic_func_defs; i++) {
+		zend_op_array *nested = scope_op->dynamic_func_defs[i];
+		if (nested->fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
+			for (uint32_t j = 0; j < scope_op->last; j++) {
+				zend_op *op = &scope_op->opcodes[j];
+				if (op->opcode == ZEND_DECLARE_SCOPE_FUNC && op->op2.num == i) {
+					zend_unfixup_scope_func_offsets(nested, parent_last_var, T_base + op->extended_value, nested->T);
+					break;
+				}
+			}
+		}
+	}
+}
+
+/* pass_two extension: reserve T slots for each DECLARE_SCOPE_FUNC's scope_ed
+ * frame plus tracked-temp bookkeeping. Top-level regular op_arrays
+ * additionally fix up every scope-fn child's body via the recursive
+ * zend_fixup_scope_func_offsets — the recursion uses the top-level
+ * last_var, so nested scope-fn op_arrays must skip the fixup half here. */
+ZEND_API void zend_pass_two_install_scope_fn_reservations(zend_op_array *op_array)
+{
+	uint32_t scope_func_count = 0;
+	for (uint32_t i = 0; i < op_array->last; i++) {
+		zend_op *op = &op_array->opcodes[i];
+		if (op->opcode == ZEND_DECLARE_SCOPE_FUNC) {
+			zend_op_array *child = op_array->dynamic_func_defs[op->op2.num];
+			op->extended_value = op_array->T;
+			op_array->T += child->T + ZEND_CALL_FRAME_SLOT;
+			scope_func_count++;
+		}
+	}
+	if (!scope_func_count) {
+		return;
+	}
+	op_array->T += scope_func_count + 1; /* tracked-temp entries + base */
+	op_array->fn_flags2 |= ZEND_ACC2_HAS_TRACKED_TEMPORARIES;
+
+	if (op_array->fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
+		/* Nested scope-fn: the top-level parent's pass_two will fix up
+		 * our body recursively with the correct parent_last_var. */
+		return;
+	}
+
+	for (uint32_t i = 0; i < op_array->last; i++) {
+		zend_op *op = &op_array->opcodes[i];
+		if (op->opcode == ZEND_DECLARE_SCOPE_FUNC) {
+			zend_op_array *child = op_array->dynamic_func_defs[op->op2.num];
+			zend_fixup_scope_func_offsets(child, op_array->last_var, op->extended_value, child->T);
+		}
+	}
+}
+
+/* Inverse of zend_pass_two_install_scope_fn_reservations. */
+ZEND_API void zend_pass_two_revert_scope_fn_reservations(zend_op_array *op_array)
+{
+	if (!(op_array->fn_flags2 & ZEND_ACC2_HAS_TRACKED_TEMPORARIES)) {
+		return;
+	}
+
+	if (!(op_array->fn_flags2 & ZEND_ACC2_SCOPE_FUNC)) {
+		for (uint32_t i = 0; i < op_array->last; i++) {
+			zend_op *op = &op_array->opcodes[i];
+			if (op->opcode == ZEND_DECLARE_SCOPE_FUNC) {
+				zend_op_array *child = op_array->dynamic_func_defs[op->op2.num];
+				zend_unfixup_scope_func_offsets(child, op_array->last_var, op->extended_value, child->T);
+			}
+		}
+	}
+
+	uint32_t scope_func_count = 0;
+	for (uint32_t i = 0; i < op_array->last; i++) {
+		if (op_array->opcodes[i].opcode == ZEND_DECLARE_SCOPE_FUNC) {
+			scope_func_count++;
+		}
+	}
+
+	op_array->T -= scope_func_count + 1; /* undo tracked-temp slots */
+
+	for (uint32_t i = 0; i < op_array->last; i++) {
+		zend_op *op = &op_array->opcodes[i];
+		if (op->opcode == ZEND_DECLARE_SCOPE_FUNC) {
+			zend_op_array *child = op_array->dynamic_func_defs[op->op2.num];
+			op_array->T -= child->T + ZEND_CALL_FRAME_SLOT;
+			op->extended_value = 0;
+		}
+	}
+
+	/* Keep ZEND_ACC2_HAS_TRACKED_TEMPORARIES set: optimizer passes need it
+	 * to recognize parents-with-scope-fn-children even while the
+	 * reservations themselves are temporarily undone. install/revert form
+	 * a self-symmetric pair without depending on the flag's value. */
+}
+
 static zend_op_array *zend_compile_func_decl_ex(
 	znode *result, zend_ast *ast, enum func_decl_level level,
 	zend_string *property_info_name,
@@ -9091,28 +9239,6 @@ static zend_op_array *zend_compile_func_decl_ex(
 
 	pass_two(CG(active_op_array));
 
-	/* Convert each scope-fn child's body opcodes from positive to negative
-	 * offsets relative to scope_ed. Done from the top-level parent only;
-	 * nested scope fns are recursed inside zend_fixup_scope_func_offsets. */
-	if (!(CG(active_op_array)->fn_flags2 & ZEND_ACC2_SCOPE_FUNC)) {
-		for (uint32_t i = 0; i < CG(active_op_array)->num_dynamic_func_defs; i++) {
-			zend_op_array *child = CG(active_op_array)->dynamic_func_defs[i];
-			if (child->fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
-				for (uint32_t j = 0; j < CG(active_op_array)->last; j++) {
-					zend_op *op = &CG(active_op_array)->opcodes[j];
-					if (op->opcode == ZEND_DECLARE_SCOPE_FUNC && op->op2.num == i) {
-						zend_fixup_scope_func_offsets(
-							child,
-							CG(active_op_array)->last_var,
-							op->extended_value,
-							child->T);
-						break;
-					}
-				}
-			}
-		}
-	}
-
 	zend_oparray_context_end(&orig_oparray_context);
 
 	/* Pop the loop variable stack separator */
@@ -9128,22 +9254,6 @@ static zend_op_array *zend_compile_func_decl_ex(
 
 	CG(active_op_array) = orig_op_array;
 	CG(active_class_entry) = orig_class_entry;
-
-	/* Reserve T slots in the parent's frame for the scope_ed call frame plus
-	 * the scope fn's own TMPs, and patch the just-emitted DECLARE_SCOPE_FUNC
-	 * with the resulting offset. */
-	if (is_scope_fn) {
-		uint32_t T_base = orig_op_array->T;
-		orig_op_array->T += op_array->T + ZEND_CALL_FRAME_SLOT;
-
-		for (uint32_t i = orig_op_array->last; i > 0; i--) {
-			zend_op *op = &orig_op_array->opcodes[i - 1];
-			if (op->opcode == ZEND_DECLARE_SCOPE_FUNC) {
-				op->extended_value = T_base;
-				break;
-			}
-		}
-	}
 
 	return op_array;
 }

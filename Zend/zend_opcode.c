@@ -1135,20 +1135,7 @@ ZEND_API void pass_two(zend_op_array *op_array)
 
     op_array->T += ZEND_OBSERVER_ENABLED; // reserve last temporary for observers if enabled
 
-	/* Reserve tracked temporaries slots for scope function declarations.
-	 * +1 for the base entry (count), +1 per DECLARE_SCOPE_FUNC opcode. */
-	{
-		uint32_t scope_func_count = 0;
-		for (uint32_t i = 0; i < op_array->last; i++) {
-			if (op_array->opcodes[i].opcode == ZEND_DECLARE_SCOPE_FUNC) {
-				scope_func_count++;
-			}
-		}
-		if (scope_func_count) {
-			op_array->T += scope_func_count + 1;
-			op_array->fn_flags2 |= ZEND_ACC2_HAS_TRACKED_TEMPORARIES;
-		}
-	}
+	zend_pass_two_install_scope_fn_reservations(op_array);
 
 	/* Needs to be set directly after the opcode/literal reallocation, to ensure destruction
 	 * happens correctly if any of the following fixups generate a fatal error. */

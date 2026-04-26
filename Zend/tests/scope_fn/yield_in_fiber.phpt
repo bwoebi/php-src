@@ -40,17 +40,19 @@ try {
     echo "caught: ", $e->getMessage(), "\n";
 }
 
-/* Pollute the vm_stack region that held outer's frame (and scope_ed): if the
- * generator or fiber kept a stale pointer into that region, the next access
- * would land in overwritten memory and crash. */
-function churn(int $depth, string $tail = ""): string {
-    $local = str_repeat("y", 256);
-    if ($depth > 0) return churn($depth - 1, $tail) . $local;
-    return $tail . $local;
+/* Pollute the vm_stack region that held outer's frame (and scope_ed): if
+ * the generator or fiber kept a stale pointer into that region, the next
+ * access would land in overwritten memory. */
+function churn(int $depth): int {
+    $a=1; $b=2; $c=3; $d=4; $e=5; $f=6; $g=7; $h=8;
+    $i=9; $j=10; $k=11; $l=12; $m=13; $n=14; $o=15; $p=16;
+    $q=17; $r=18; $s=19; $t=20; $u=21; $v=22; $w=23; $x=24;
+    if ($depth > 0) return churn($depth - 1) + $a + $x;
+    return $a + $b + $c + $d + $e + $f + $g + $h
+         + $i + $j + $k + $l + $m + $n + $o + $p
+         + $q + $r + $s + $t + $u + $v + $w + $x;
 }
-$noise = "";
-for ($i = 0; $i < 40; $i++) $noise .= churn(10);
-unset($noise);
+for ($iter = 0; $iter < 100; $iter++) churn(50);
 
 /* Generator is dead. Fiber is alive, suspended. Resume it. */
 echo "post-outer: gen valid=", var_export($gen->valid(), true), "\n";

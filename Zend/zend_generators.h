@@ -91,6 +91,13 @@ struct _zend_generator {
 	 * the generator is alive. */
 	zend_function *func;
 
+	/* While ZEND_GENERATOR_IN_FIBER is set: the fiber currently host'ing
+	 * this generator's body. NULL otherwise. Used by the scope-fn
+	 * parent-exit cleanup to find the fiber it must force-unwind when a
+	 * fiber is suspended inside the generator's body and the generator
+	 * is being force-destructed. */
+	zend_object *fiber_running_me;
+
 	/* ZEND_GENERATOR_* flags */
 	uint8_t flags;
 };

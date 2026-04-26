@@ -22,6 +22,7 @@
 #include "zend_interfaces.h"
 #include "zend_exceptions.h"
 #include "zend_generators.h"
+#include "zend_fibers.h"
 #include "zend_closures.h"
 #include "zend_generators_arginfo.h"
 #include "zend_observer.h"
@@ -146,7 +147,48 @@ ZEND_API void zend_generator_close(zend_generator *generator, bool finished_exec
 			if (UNEXPECTED(!finished_execution) && !CG(unclean_shutdown)) {
 				zend_generator_cleanup_unfinished_execution(generator, execute_data, 0);
 			}
+			/* The gen body's frame IS scope_ed. When a fiber is being
+			 * force-unwound through this scope_ed and the gen body
+			 * terminates via this close path (not zend_leave_helper),
+			 * leave_helper's boundary handler never runs — clear the
+			 * fiber's unwind state here, build the visible escape Error
+			 * with a stacktrace from inside the gen body, and synthetically
+			 * suspend back to the parent. The Error is injected into the
+			 * fiber on its next resume so any try/catch surrounding the
+			 * suspending call inside the fiber body catches it. */
+			zend_fiber *unwind_fiber = NULL;
+			if (UNEXPECTED(EG(active_fiber) != NULL
+			            && EG(active_fiber)->forced_unwind_target == execute_data)) {
+				unwind_fiber = EG(active_fiber);
+				ZEND_ASSERT(unwind_fiber->deferred_exception != NULL);
+				unwind_fiber->forced_unwind_target = NULL;
+				OBJ_RELEASE(unwind_fiber->deferred_exception);
+				unwind_fiber->deferred_exception = NULL;
+
+				/* Absorb the in-flight sentinel before building the visible
+				 * Error and suspending. */
+				if (EG(exception) != NULL && zend_is_scope_fn_unwind(EG(exception))) {
+					OBJ_RELEASE(EG(exception));
+					EG(exception) = NULL;
+				}
+
+				/* Build the Error with stacktrace from inside the gen body
+				 * by temporarily restoring EG(current_execute_data) to the
+				 * gen body frame (scope_ed) before object construction. */
+				ZEND_ASSERT(unwind_fiber->pending_resume_throw == NULL);
+				zend_execute_data *saved_ced = EG(current_execute_data);
+				EG(current_execute_data) = execute_data;
+				unwind_fiber->pending_resume_throw = zend_build_error(NULL,
+					"Scope function closure must not outlive the declaring scope");
+				EG(current_execute_data) = saved_ced;
+			}
 			zend_scope_ed_cleanup(execute_data);
+			if (UNEXPECTED(unwind_fiber != NULL)) {
+				/* current_execute_data here is the fiber body frame above
+				 * the (now-closed) generator: that's where the throw
+				 * materializes on the user's next resume. */
+				zend_fiber_synthetic_suspend(unwind_fiber, EG(current_execute_data));
+			}
 			return;
 		}
 
@@ -797,6 +839,8 @@ try_again:
 	if (EG(active_fiber)) {
 		orig_generator->flags |= ZEND_GENERATOR_IN_FIBER;
 		generator->flags |= ZEND_GENERATOR_IN_FIBER;
+		orig_generator->fiber_running_me = &EG(active_fiber)->std;
+		generator->fiber_running_me = &EG(active_fiber)->std;
 	}
 
 	/* Drop the AT_FIRST_YIELD flag */
@@ -833,6 +877,8 @@ try_again:
 
 			orig_generator->flags &= ~(ZEND_GENERATOR_DO_INIT | ZEND_GENERATOR_IN_FIBER);
 			generator->flags &= ~(ZEND_GENERATOR_CURRENTLY_RUNNING | ZEND_GENERATOR_IN_FIBER);
+			orig_generator->fiber_running_me = NULL;
+			generator->fiber_running_me = NULL;
 			return;
 		}
 		/* If there are no more delegated values, resume the generator
@@ -866,6 +912,10 @@ try_again:
 		}
 	}
 	generator->flags &= ~(ZEND_GENERATOR_CURRENTLY_RUNNING | ZEND_GENERATOR_IN_FIBER);
+	generator->fiber_running_me = NULL;
+	if (orig_generator != generator) {
+		orig_generator->fiber_running_me = NULL;
+	}
 
 	generator->frozen_call_stack = NULL;
 	if (EXPECTED(generator->execute_data) &&
@@ -877,6 +927,17 @@ try_again:
 	/* Restore executor globals */
 	EG(current_execute_data) = original_execute_data;
 	EG(jit_trace_num) = original_jit_trace_num;
+
+	/* Scope-fn unwind sentinel: thrown into the body when the closure's
+	 * declaring scope is exiting. Finally blocks have already run via the
+	 * normal exception machinery; absorb the sentinel here so it never
+	 * surfaces to user code. The generator was already closed at the
+	 * source of the unwind. */
+	if (UNEXPECTED(EG(exception) != NULL)
+	 && zend_is_scope_fn_unwind(EG(exception))) {
+		OBJ_RELEASE(EG(exception));
+		EG(exception) = NULL;
+	}
 
 	/* If an exception was thrown in the generator we have to internally
 	 * rethrow it in the parent scope.

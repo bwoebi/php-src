@@ -27,16 +27,17 @@ try {
 /* Force the parent's vm_stack region (where scope_ed lived) to be
  * reused by subsequent function calls. If the generator's saved state
  * wasn't properly torn down, this would clobber the scope_ed memory
- * the generator still references — and the next access below would
- * crash. */
-function churn(int $depth): string {
-    $local = str_repeat("x", 200);
-    if ($depth > 0) return churn($depth - 1) . $local;
-    return $local;
+ * the generator still references. */
+function churn(int $depth): int {
+    $a=1; $b=2; $c=3; $d=4; $e=5; $f=6; $g=7; $h=8;
+    $i=9; $j=10; $k=11; $l=12; $m=13; $n=14; $o=15; $p=16;
+    $q=17; $r=18; $s=19; $t=20; $u=21; $v=22; $w=23; $x=24;
+    if ($depth > 0) return churn($depth - 1) + $a + $x;
+    return $a + $b + $c + $d + $e + $f + $g + $h
+         + $i + $j + $k + $l + $m + $n + $o + $p
+         + $q + $r + $s + $t + $u + $v + $w + $x;
 }
-$noise = "";
-for ($i = 0; $i < 50; $i++) $noise .= churn(8);
-unset($noise);
+for ($iter = 0; $iter < 100; $iter++) churn(50);
 
 /* Generator is dead. Subsequent ops report "already finished". */
 var_dump($gen->valid());

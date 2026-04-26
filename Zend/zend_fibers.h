@@ -132,13 +132,17 @@ struct _zend_fiber {
 
 	/* Forced-unwind state used by parent-exit cleanup of cross-stack scope
 	 * functions. While forced_unwind_target != NULL, Fiber::suspend()
-	 * re-throws deferred_exception instead of suspending. The fiber is
-	 * driven through scope_ed at this address, then synthetically suspended
-	 * back to the parent's leave_helper at the scope_ed boundary. The
-	 * deferred_exception is re-injected on the user's next resume so it
-	 * continues propagating naturally. Both NULL in normal operation. */
+	 * re-throws deferred_exception (the in-flight ScopeFnUnwind sentinel)
+	 * instead of suspending. The fiber is driven through scope_ed at this
+	 * address; the scope_ed boundary handler then clears both fields. All
+	 * three slots are NULL in normal operation. */
 	zend_execute_data *forced_unwind_target;
 	zend_object       *deferred_exception;
+	/* Visible escape Error to throw to the user on the fiber's next resume.
+	 * Created at force-unwind start (so its stacktrace reflects the parent
+	 * function's leave) and surfaces through Fiber::resume / Fiber::throw
+	 * rather than the unwound fiber body. */
+	zend_object       *pending_resume_throw;
 };
 
 ZEND_API zend_result zend_fiber_start(zend_fiber *fiber, zval *return_value);

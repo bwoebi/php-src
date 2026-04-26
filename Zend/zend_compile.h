@@ -1011,6 +1011,16 @@ ZEND_API void zend_recalc_live_ranges(
 	zend_op_array *op_array, zend_needs_live_range_cb needs_live_range);
 
 ZEND_API void pass_two(zend_op_array *op_array);
+
+/* Reserve T slots for each DECLARE_SCOPE_FUNC's scope_ed frame plus
+ * tracked-temp entries, and fix up each scope-fn child's body opcodes.
+ * Called from pass_two on parents containing scope-fn children. */
+ZEND_API void zend_pass_two_install_scope_fn_reservations(zend_op_array *op_array);
+
+/* Inverse: un-fixup each scope-fn child's body and free the reserved T
+ * slots, leaving the parent in its compile-time positive-offset form so
+ * the optimizer can run any pass on it. Called from revert_pass_two. */
+ZEND_API void zend_pass_two_revert_scope_fn_reservations(zend_op_array *op_array);
 ZEND_API bool zend_is_compiling(void);
 ZEND_API char *zend_make_compiled_string_description(const char *name);
 ZEND_API void zend_initialize_class_data(zend_class_entry *ce, bool nullify_handlers);

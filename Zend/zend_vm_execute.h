@@ -1159,34 +1159,36 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV 
 		uintptr_t enp_tag = (uintptr_t)EX(extra_named_params);
 		zend_execute_data *original_call_frame = (zend_execute_data *)(enp_tag & ~(uintptr_t)ZEND_SCOPE_ED_ENP_TAG_MASK);
 		zend_execute_data *scope_ed = execute_data;
-		bool just_crossed_forced_unwind = false;
+		zend_fiber *unwind_fiber = NULL;
 
 		if (UNEXPECTED(enp_tag & ZEND_SCOPE_ED_ENP_TAG_OBJECT_ATTACHED)) {
 			zend_object **attached_object_ptr = zend_closure_get_attached_object_ptr(closure_obj);
 			ZEND_ASSERT(*attached_object_ptr != NULL);
-			zend_object *attached_object = *attached_object_ptr;
 			*attached_object_ptr = NULL;
+		}
 
-			/* The attached object is either a Fiber driving a forced unwind
-			 * through this scope_ed, or a Generator whose lifetime is bound
-			 * to the scope_ed. Only the Fiber forced-unwind needs special
-			 * handling here; the Generator's destructor cleans up itself. */
-			if (attached_object->ce == zend_ce_fiber) {
-				zend_fiber *attached_fiber = (zend_fiber *)attached_object;
-				if (UNEXPECTED(attached_fiber->forced_unwind_target == scope_ed)) {
-					ZEND_ASSERT(attached_fiber->deferred_exception != NULL);
-					attached_fiber->forced_unwind_target = NULL;
-					if (EG(exception) != NULL) {
-						OBJ_RELEASE(attached_fiber->deferred_exception);
-						attached_fiber->deferred_exception = EG(exception);
-						EG(exception) = NULL;
-					} else {
-						OBJ_RELEASE(attached_fiber->deferred_exception);
-						attached_fiber->deferred_exception = NULL;
-					}
-					just_crossed_forced_unwind = true;
-				}
+		/* Boundary of an in-flight forced unwind: clear the fiber's unwind
+		 * state, absorb the sentinel, and build the visible escape Error
+		 * with a stacktrace from inside the scope_fn body (EG(current_execute_data)
+		 * is still scope_ed at this point). The Error is injected into the
+		 * fiber on its next resume so the throw materializes inside the
+		 * fiber rather than at the user's resume() call site. */
+		if (UNEXPECTED(EG(active_fiber) != NULL
+		            && EG(active_fiber)->forced_unwind_target == scope_ed)) {
+			unwind_fiber = EG(active_fiber);
+			ZEND_ASSERT(unwind_fiber->deferred_exception != NULL);
+			unwind_fiber->forced_unwind_target = NULL;
+			OBJ_RELEASE(unwind_fiber->deferred_exception);
+			unwind_fiber->deferred_exception = NULL;
+
+			if (EG(exception) != NULL && zend_is_scope_fn_unwind(EG(exception))) {
+				OBJ_RELEASE(EG(exception));
+				EG(exception) = NULL;
 			}
+
+			ZEND_ASSERT(unwind_fiber->pending_resume_throw == NULL);
+			unwind_fiber->pending_resume_throw = zend_build_error(NULL,
+				"Scope function closure must not outlive the declaring scope");
 		}
 
 		EG(current_execute_data) = EX(prev_execute_data);
@@ -1201,35 +1203,26 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV 
 		execute_data = EX(prev_execute_data);
 
 		if (UNEXPECTED(call_info & ZEND_CALL_TOP)) {
-			/* zend_call_function frees the original call frame itself.
-			 * If we just crossed a forced-unwind boundary, restore the
-			 * deferred exception so it propagates as the fiber's
-			 * terminating throw — there is no further user code. */
-			if (UNEXPECTED(just_crossed_forced_unwind)) {
-				zend_fiber *fiber = EG(active_fiber);
-				ZEND_ASSERT(fiber != NULL);
-				if (fiber->deferred_exception) {
-					EG(exception) = fiber->deferred_exception;
-					fiber->deferred_exception = NULL;
-				}
+			if (UNEXPECTED(unwind_fiber != NULL)) {
+				/* TOP: scope_fn body is the fiber body. Suspend before the
+				 * natural fiber-finish so the user can resume and have the
+				 * Error injected. The injection lands here on resume; the
+				 * subsequent ZEND_VM_RETURN unwinds the fiber body with the
+				 * Error in flight, surfacing it through Fiber::resume's
+				 * transfer. */
+				zend_fiber_synthetic_suspend(unwind_fiber, NULL);
 			}
 			ZEND_VM_RETURN();
 		}
 
 		zend_scope_ed_pop_original_call_frame(original_call_frame);
 
-		/* If we just crossed the forced-unwind boundary, synthetically
-		 * suspend back to the parent's leave_helper (currently blocked in
-		 * zend_fiber_force_unwind_resume). On the user's next resume,
-		 * re-inject any deferred exception so it continues propagating. */
-		if (UNEXPECTED(just_crossed_forced_unwind)) {
-			zend_fiber *fiber = EG(active_fiber);
-			ZEND_ASSERT(fiber != NULL);
-			zend_fiber_synthetic_suspend(fiber, execute_data);
-			if (fiber->deferred_exception) {
-				EG(exception) = fiber->deferred_exception;
-				fiber->deferred_exception = NULL;
-			}
+		if (UNEXPECTED(unwind_fiber != NULL)) {
+			/* Non-TOP: synthetically suspend with execute_data set to the
+			 * frame above the scope_fn — the user's next resume injects the
+			 * Error there, so it materializes at the scope_fn call site
+			 * inside the fiber body. */
+			zend_fiber_synthetic_suspend(unwind_fiber, execute_data);
 		}
 
 		if (UNEXPECTED(EG(exception) != NULL)) {
@@ -54281,34 +54274,36 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV  zend
 		uintptr_t enp_tag = (uintptr_t)EX(extra_named_params);
 		zend_execute_data *original_call_frame = (zend_execute_data *)(enp_tag & ~(uintptr_t)ZEND_SCOPE_ED_ENP_TAG_MASK);
 		zend_execute_data *scope_ed = execute_data;
-		bool just_crossed_forced_unwind = false;
+		zend_fiber *unwind_fiber = NULL;
 
 		if (UNEXPECTED(enp_tag & ZEND_SCOPE_ED_ENP_TAG_OBJECT_ATTACHED)) {
 			zend_object **attached_object_ptr = zend_closure_get_attached_object_ptr(closure_obj);
 			ZEND_ASSERT(*attached_object_ptr != NULL);
-			zend_object *attached_object = *attached_object_ptr;
 			*attached_object_ptr = NULL;
+		}
 
-			/* The attached object is either a Fiber driving a forced unwind
-			 * through this scope_ed, or a Generator whose lifetime is bound
-			 * to the scope_ed. Only the Fiber forced-unwind needs special
-			 * handling here; the Generator's destructor cleans up itself. */
-			if (attached_object->ce == zend_ce_fiber) {
-				zend_fiber *attached_fiber = (zend_fiber *)attached_object;
-				if (UNEXPECTED(attached_fiber->forced_unwind_target == scope_ed)) {
-					ZEND_ASSERT(attached_fiber->deferred_exception != NULL);
-					attached_fiber->forced_unwind_target = NULL;
-					if (EG(exception) != NULL) {
-						OBJ_RELEASE(attached_fiber->deferred_exception);
-						attached_fiber->deferred_exception = EG(exception);
-						EG(exception) = NULL;
-					} else {
-						OBJ_RELEASE(attached_fiber->deferred_exception);
-						attached_fiber->deferred_exception = NULL;
-					}
-					just_crossed_forced_unwind = true;
-				}
+		/* Boundary of an in-flight forced unwind: clear the fiber's unwind
+		 * state, absorb the sentinel, and build the visible escape Error
+		 * with a stacktrace from inside the scope_fn body (EG(current_execute_data)
+		 * is still scope_ed at this point). The Error is injected into the
+		 * fiber on its next resume so the throw materializes inside the
+		 * fiber rather than at the user's resume() call site. */
+		if (UNEXPECTED(EG(active_fiber) != NULL
+		            && EG(active_fiber)->forced_unwind_target == scope_ed)) {
+			unwind_fiber = EG(active_fiber);
+			ZEND_ASSERT(unwind_fiber->deferred_exception != NULL);
+			unwind_fiber->forced_unwind_target = NULL;
+			OBJ_RELEASE(unwind_fiber->deferred_exception);
+			unwind_fiber->deferred_exception = NULL;
+
+			if (EG(exception) != NULL && zend_is_scope_fn_unwind(EG(exception))) {
+				OBJ_RELEASE(EG(exception));
+				EG(exception) = NULL;
 			}
+
+			ZEND_ASSERT(unwind_fiber->pending_resume_throw == NULL);
+			unwind_fiber->pending_resume_throw = zend_build_error(NULL,
+				"Scope function closure must not outlive the declaring scope");
 		}
 
 		EG(current_execute_data) = EX(prev_execute_data);
@@ -54323,35 +54318,26 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV  zend
 		execute_data = EX(prev_execute_data);
 
 		if (UNEXPECTED(call_info & ZEND_CALL_TOP)) {
-			/* zend_call_function frees the original call frame itself.
-			 * If we just crossed a forced-unwind boundary, restore the
-			 * deferred exception so it propagates as the fiber's
-			 * terminating throw — there is no further user code. */
-			if (UNEXPECTED(just_crossed_forced_unwind)) {
-				zend_fiber *fiber = EG(active_fiber);
-				ZEND_ASSERT(fiber != NULL);
-				if (fiber->deferred_exception) {
-					EG(exception) = fiber->deferred_exception;
-					fiber->deferred_exception = NULL;
-				}
+			if (UNEXPECTED(unwind_fiber != NULL)) {
+				/* TOP: scope_fn body is the fiber body. Suspend before the
+				 * natural fiber-finish so the user can resume and have the
+				 * Error injected. The injection lands here on resume; the
+				 * subsequent ZEND_VM_RETURN unwinds the fiber body with the
+				 * Error in flight, surfacing it through Fiber::resume's
+				 * transfer. */
+				zend_fiber_synthetic_suspend(unwind_fiber, NULL);
 			}
 			ZEND_VM_RETURN();
 		}
 
 		zend_scope_ed_pop_original_call_frame(original_call_frame);
 
-		/* If we just crossed the forced-unwind boundary, synthetically
-		 * suspend back to the parent's leave_helper (currently blocked in
-		 * zend_fiber_force_unwind_resume). On the user's next resume,
-		 * re-inject any deferred exception so it continues propagating. */
-		if (UNEXPECTED(just_crossed_forced_unwind)) {
-			zend_fiber *fiber = EG(active_fiber);
-			ZEND_ASSERT(fiber != NULL);
-			zend_fiber_synthetic_suspend(fiber, execute_data);
-			if (fiber->deferred_exception) {
-				EG(exception) = fiber->deferred_exception;
-				fiber->deferred_exception = NULL;
-			}
+		if (UNEXPECTED(unwind_fiber != NULL)) {
+			/* Non-TOP: synthetically suspend with execute_data set to the
+			 * frame above the scope_fn — the user's next resume injects the
+			 * Error there, so it materializes at the scope_fn call site
+			 * inside the fiber body. */
+			zend_fiber_synthetic_suspend(unwind_fiber, execute_data);
 		}
 
 		if (UNEXPECTED(EG(exception) != NULL)) {
@@ -110949,34 +110935,36 @@ zend_leave_helper_SPEC_LABEL:
 		uintptr_t enp_tag = (uintptr_t)EX(extra_named_params);
 		zend_execute_data *original_call_frame = (zend_execute_data *)(enp_tag & ~(uintptr_t)ZEND_SCOPE_ED_ENP_TAG_MASK);
 		zend_execute_data *scope_ed = execute_data;
-		bool just_crossed_forced_unwind = false;
+		zend_fiber *unwind_fiber = NULL;
 
 		if (UNEXPECTED(enp_tag & ZEND_SCOPE_ED_ENP_TAG_OBJECT_ATTACHED)) {
 			zend_object **attached_object_ptr = zend_closure_get_attached_object_ptr(closure_obj);
 			ZEND_ASSERT(*attached_object_ptr != NULL);
-			zend_object *attached_object = *attached_object_ptr;
 			*attached_object_ptr = NULL;
+		}
 
-			/* The attached object is either a Fiber driving a forced unwind
-			 * through this scope_ed, or a Generator whose lifetime is bound
-			 * to the scope_ed. Only the Fiber forced-unwind needs special
-			 * handling here; the Generator's destructor cleans up itself. */
-			if (attached_object->ce == zend_ce_fiber) {
-				zend_fiber *attached_fiber = (zend_fiber *)attached_object;
-				if (UNEXPECTED(attached_fiber->forced_unwind_target == scope_ed)) {
-					ZEND_ASSERT(attached_fiber->deferred_exception != NULL);
-					attached_fiber->forced_unwind_target = NULL;
-					if (EG(exception) != NULL) {
-						OBJ_RELEASE(attached_fiber->deferred_exception);
-						attached_fiber->deferred_exception = EG(exception);
-						EG(exception) = NULL;
-					} else {
-						OBJ_RELEASE(attached_fiber->deferred_exception);
-						attached_fiber->deferred_exception = NULL;
-					}
-					just_crossed_forced_unwind = true;
-				}
+		/* Boundary of an in-flight forced unwind: clear the fiber's unwind
+		 * state, absorb the sentinel, and build the visible escape Error
+		 * with a stacktrace from inside the scope_fn body (EG(current_execute_data)
+		 * is still scope_ed at this point). The Error is injected into the
+		 * fiber on its next resume so the throw materializes inside the
+		 * fiber rather than at the user's resume() call site. */
+		if (UNEXPECTED(EG(active_fiber) != NULL
+		            && EG(active_fiber)->forced_unwind_target == scope_ed)) {
+			unwind_fiber = EG(active_fiber);
+			ZEND_ASSERT(unwind_fiber->deferred_exception != NULL);
+			unwind_fiber->forced_unwind_target = NULL;
+			OBJ_RELEASE(unwind_fiber->deferred_exception);
+			unwind_fiber->deferred_exception = NULL;
+
+			if (EG(exception) != NULL && zend_is_scope_fn_unwind(EG(exception))) {
+				OBJ_RELEASE(EG(exception));
+				EG(exception) = NULL;
 			}
+
+			ZEND_ASSERT(unwind_fiber->pending_resume_throw == NULL);
+			unwind_fiber->pending_resume_throw = zend_build_error(NULL,
+				"Scope function closure must not outlive the declaring scope");
 		}
 
 		EG(current_execute_data) = EX(prev_execute_data);
@@ -110991,35 +110979,26 @@ zend_leave_helper_SPEC_LABEL:
 		execute_data = EX(prev_execute_data);
 
 		if (UNEXPECTED(call_info & ZEND_CALL_TOP)) {
-			/* zend_call_function frees the original call frame itself.
-			 * If we just crossed a forced-unwind boundary, restore the
-			 * deferred exception so it propagates as the fiber's
-			 * terminating throw — there is no further user code. */
-			if (UNEXPECTED(just_crossed_forced_unwind)) {
-				zend_fiber *fiber = EG(active_fiber);
-				ZEND_ASSERT(fiber != NULL);
-				if (fiber->deferred_exception) {
-					EG(exception) = fiber->deferred_exception;
-					fiber->deferred_exception = NULL;
-				}
+			if (UNEXPECTED(unwind_fiber != NULL)) {
+				/* TOP: scope_fn body is the fiber body. Suspend before the
+				 * natural fiber-finish so the user can resume and have the
+				 * Error injected. The injection lands here on resume; the
+				 * subsequent ZEND_VM_RETURN unwinds the fiber body with the
+				 * Error in flight, surfacing it through Fiber::resume's
+				 * transfer. */
+				zend_fiber_synthetic_suspend(unwind_fiber, NULL);
 			}
 			ZEND_VM_RETURN();
 		}
 
 		zend_scope_ed_pop_original_call_frame(original_call_frame);
 
-		/* If we just crossed the forced-unwind boundary, synthetically
-		 * suspend back to the parent's leave_helper (currently blocked in
-		 * zend_fiber_force_unwind_resume). On the user's next resume,
-		 * re-inject any deferred exception so it continues propagating. */
-		if (UNEXPECTED(just_crossed_forced_unwind)) {
-			zend_fiber *fiber = EG(active_fiber);
-			ZEND_ASSERT(fiber != NULL);
-			zend_fiber_synthetic_suspend(fiber, execute_data);
-			if (fiber->deferred_exception) {
-				EG(exception) = fiber->deferred_exception;
-				fiber->deferred_exception = NULL;
-			}
+		if (UNEXPECTED(unwind_fiber != NULL)) {
+			/* Non-TOP: synthetically suspend with execute_data set to the
+			 * frame above the scope_fn — the user's next resume injects the
+			 * Error there, so it materializes at the scope_fn call site
+			 * inside the fiber body. */
+			zend_fiber_synthetic_suspend(unwind_fiber, execute_data);
 		}
 
 		if (UNEXPECTED(EG(exception) != NULL)) {

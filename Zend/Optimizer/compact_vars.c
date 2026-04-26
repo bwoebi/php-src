@@ -18,16 +18,95 @@
 #include "zend_bitset.h"
 #include "zend_observer.h"
 
+/* For a scope-fn op_array (post-revert: bodies hold positive byte offsets):
+ * mark its body's IS_CV references in the parent's used_vars bitset, plus
+ * the parent CVs that ENTER_SCOPE_FUNC's literal map writes into when
+ * copying parameters in. Recurses into nested scope-fns whose bodies also
+ * reference the top-level parent's CVs. */
+static void mark_scope_fn_body_cv_uses(const zend_op_array *scope_op, zend_bitset used_vars) {
+	bool in_body = false;
+	for (uint32_t i = 0; i < scope_op->last; i++) {
+		const zend_op *opline = &scope_op->opcodes[i];
+		if (opline->opcode == ZEND_ENTER_SCOPE_FUNC) {
+			in_body = true;
+			uint32_t first_literal = opline->op2.num;
+			uint32_t num_params = opline->op1.num;
+			for (uint32_t j = 0; j < num_params; j++) {
+				uint32_t off = (uint32_t)Z_LVAL(scope_op->literals[first_literal + j]);
+				zend_bitset_incl(used_vars, VAR_NUM(off));
+			}
+			continue;
+		}
+		if (!in_body) {
+			continue;
+		}
+		if (opline->op1_type == IS_CV) {
+			zend_bitset_incl(used_vars, VAR_NUM(opline->op1.var));
+		}
+		if (opline->op2_type == IS_CV) {
+			zend_bitset_incl(used_vars, VAR_NUM(opline->op2.var));
+		}
+		if (opline->result_type == IS_CV) {
+			zend_bitset_incl(used_vars, VAR_NUM(opline->result.var));
+		}
+	}
+	for (uint32_t i = 0; i < scope_op->num_dynamic_func_defs; i++) {
+		zend_op_array *nested = scope_op->dynamic_func_defs[i];
+		if (nested->fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
+			mark_scope_fn_body_cv_uses(nested, used_vars);
+		}
+	}
+}
+
+/* Mirror update for scope-fn bodies after the parent's CV renumbering.
+ * Also rewrites the param→parent-CV offsets in the literal pool that
+ * ENTER_SCOPE_FUNC consults at runtime to copy params into parent CVs. */
+static void rename_scope_fn_body_cv_refs(zend_op_array *scope_op, const uint32_t *vars_map) {
+	bool in_body = false;
+	for (uint32_t i = 0; i < scope_op->last; i++) {
+		zend_op *opline = &scope_op->opcodes[i];
+		if (opline->opcode == ZEND_ENTER_SCOPE_FUNC) {
+			in_body = true;
+			uint32_t first_literal = opline->op2.num;
+			uint32_t num_params = opline->op1.num;
+			for (uint32_t j = 0; j < num_params; j++) {
+				zval *zv = &scope_op->literals[first_literal + j];
+				uint32_t old_off = (uint32_t)Z_LVAL_P(zv);
+				ZVAL_LONG(zv, NUM_VAR(vars_map[VAR_NUM(old_off)]));
+			}
+			continue;
+		}
+		if (!in_body) {
+			continue;
+		}
+		if (opline->op1_type == IS_CV) {
+			opline->op1.var = NUM_VAR(vars_map[VAR_NUM(opline->op1.var)]);
+		}
+		if (opline->op2_type == IS_CV) {
+			opline->op2.var = NUM_VAR(vars_map[VAR_NUM(opline->op2.var)]);
+		}
+		if (opline->result_type == IS_CV) {
+			opline->result.var = NUM_VAR(vars_map[VAR_NUM(opline->result.var)]);
+		}
+	}
+	for (uint32_t i = 0; i < scope_op->num_dynamic_func_defs; i++) {
+		zend_op_array *nested = scope_op->dynamic_func_defs[i];
+		if (nested->fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
+			rename_scope_fn_body_cv_refs(nested, vars_map);
+		}
+	}
+}
+
 /* This pass removes all CVs and temporaries that are completely unused. It does *not* merge any CVs or TMPs.
  * This pass does not operate on SSA form anymore. */
 void zend_optimizer_compact_vars(zend_op_array *op_array) {
 	int i;
 
-	/* Skip for parent op_arrays containing scope functions — reserved TMPs
-	 * must stay at their fixed positions for the scope_ed frame layout.
-	 * HAS_TRACKED_TEMPORARIES is set in pass_two iff DECLARE_SCOPE_FUNC
-	 * opcodes are present. */
-	if (op_array->fn_flags2 & ZEND_ACC2_HAS_TRACKED_TEMPORARIES) {
+	/* Scope-fn op_arrays don't own their CVs — those live on the top-level
+	 * parent. We do all CV work for them as part of the parent's pass via
+	 * mark/rename recursion below; calling here on a scope-fn directly
+	 * would treat parent-CV references as out-of-range. */
+	if (op_array->fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
 		return;
 	}
 
@@ -57,6 +136,16 @@ void zend_optimizer_compact_vars(zend_op_array *op_array) {
 					zend_bitset_incl(used_vars, VAR_NUM(opline->result.var) + num);
 				}
 			}
+		}
+	}
+
+	/* Scope-fn children's bodies reference our CVs at parent-relative indices
+	 * baked into their op1.var/op2.var/result.var. Mark those uses too so we
+	 * don't drop a CV that only the child reads. */
+	for (i = 0; i < (int)op_array->num_dynamic_func_defs; i++) {
+		zend_op_array *child = op_array->dynamic_func_defs[i];
+		if (child->fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
+			mark_scope_fn_body_cv_uses(child, used_vars);
 		}
 	}
 
@@ -98,6 +187,16 @@ void zend_optimizer_compact_vars(zend_op_array *op_array) {
 		}
 		if (opline->result_type & (IS_CV|IS_VAR|IS_TMP_VAR)) {
 			opline->result.var = NUM_VAR(vars_map[VAR_NUM(opline->result.var)]);
+		}
+	}
+
+	/* Mirror the rename in scope-fn children's bodies so their parent-CV refs
+	 * track the new indices. (Scope-fn TMP refs use a separate offset region
+	 * and stay untouched here.) */
+	for (i = 0; i < (int)op_array->num_dynamic_func_defs; i++) {
+		zend_op_array *child = op_array->dynamic_func_defs[i];
+		if (child->fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
+			rename_scope_fn_body_cv_refs(child, vars_map);
 		}
 	}
 

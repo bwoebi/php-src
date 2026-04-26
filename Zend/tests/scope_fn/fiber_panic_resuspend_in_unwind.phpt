@@ -1,5 +1,5 @@
 --TEST--
-Fiber::suspend during forced unwind re-throws the deferred exception (panic mode)
+Forced unwind through a fiber's scope-fn body runs only finally blocks; sentinel is invisible to catch
 --FILE--
 <?php
 $fiber = null;
@@ -7,17 +7,17 @@ function outer() {
     global $fiber;
     $fn = fn() {
         try {
-            Fiber::suspend("paused");
-        } catch (Error $e) {
-            echo "inner caught: ", $e->getMessage(), "\n";
             try {
-                /* During forced unwind, this Fiber::suspend() must re-throw
-                 * the same Error rather than actually suspending. */
-                Fiber::suspend("would-suspend");
-                echo "unreachable\n";
-            } catch (Error $e2) {
-                echo "panic re-throw: ", $e2->getMessage(), "\n";
+                Fiber::suspend("paused");
+                echo "after suspend (unreachable)\n";
+            } catch (Throwable $e) {
+                echo "catch fired (unreachable): ", $e->getMessage(), "\n";
+            } finally {
+                echo "finally fired\n";
             }
+            echo "after try (unreachable)\n";
+        } catch (Throwable $e) {
+            echo "outer catch fired (unreachable): ", $e->getMessage(), "\n";
         }
     };
     $fiber = new Fiber($fn);
@@ -29,7 +29,6 @@ echo "done\n";
 ?>
 --EXPECT--
 string(6) "paused"
-inner caught: Scope function closure must not outlive the declaring scope
-panic re-throw: Scope function closure must not outlive the declaring scope
+finally fired
 outer escape: Scope function closure must not outlive the declaring scope
 done
