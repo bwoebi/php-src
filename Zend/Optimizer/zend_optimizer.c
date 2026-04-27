@@ -1482,25 +1482,16 @@ static void zend_optimize_op_array(zend_op_array      *op_array,
 {
 	bool is_scope_fn = zend_op_array_is_scope_fn(op_array);
 
-	/* Sandwich open: revert the body's CV/TMP/VAR offset encoding so the
-	 * inner passes (which size bookkeeping by last_var + T) stay in
-	 * bounds. Done BEFORE revert_pass_two — revert decrements T to drop
-	 * this scope-fn's own nested reservations, but the body was encoded
-	 * with the pre-revert T, so we must capture that value here. */
-	uint32_t encoding_scope_T = is_scope_fn ? op_array->T : 0;
+	/* Sandwich open: un-encode the body so optimizer passes that index by
+	 * last_var + T stay in bounds. op_array->T at this point is install_T
+	 * (the value the original fixup encoded with), which is what un-fixup
+	 * needs to correctly invert the install. */
 	uint32_t saved_scope_ed_offset = is_scope_fn
-		? zend_unfixup_scope_func_self(op_array, encoding_scope_T)
+		? zend_unfixup_scope_func_self(op_array, op_array->T)
 		: 0;
 
 	/* Revert pass_two() */
 	zend_revert_pass_two(op_array);
-
-	/* Pass 9 (temp-vars) may shrink T; the parent's reservation was sized
-	 * for actual_T_at_install, so we must end the sandwich with at least
-	 * that many TMP slots. Capture post-revert (pre-pass-9) T as the
-	 * floor: it equals the actual TMP count this scope-fn had at install
-	 * time (no own-reservations: revert just stripped those). */
-	uint32_t pre_optimize_T = op_array->T;
 
 	/* Do actual optimizations */
 	zend_optimize(op_array, ctx);
@@ -1513,16 +1504,15 @@ static void zend_optimize_op_array(zend_op_array      *op_array,
 		zend_recalc_live_ranges(op_array, NULL);
 	}
 
-	/* Sandwich close: pad T back if pass 9 shrunk it (unused upper slots
-	 * sit inside the parent's reservation — harmless), then re-encode
-	 * body operands using the same scope_T the original fixup used. The
-	 * subsequent zend_redo_pass_two re-installs this scope-fn's own
-	 * nested reservations on top, restoring T to its pre-sandwich value. */
+	/* Sandwich close: re-encode using the post-optimize T. If pass 9 shrunk
+	 * T, body TMPs land at the top of the parent's reservation [T_base +
+	 * install_T - new_T, T_base + install_T) — still inside the slots the
+	 * parent reserved at its pass_two_install. The unused bottom slots are
+	 * harmless. scope_ed_offset itself was set at parent's install and is
+	 * round-tripped through the saved value above; pass 9 cannot shift
+	 * scope_ed inside the parent's frame. */
 	if (is_scope_fn) {
-		if (op_array->T < pre_optimize_T) {
-			op_array->T = pre_optimize_T;
-		}
-		zend_refixup_scope_func_self(op_array, saved_scope_ed_offset, encoding_scope_T);
+		zend_refixup_scope_func_self(op_array, saved_scope_ed_offset, op_array->T);
 	}
 
 	/* Redo pass_two() */
