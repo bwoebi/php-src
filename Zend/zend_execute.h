@@ -382,9 +382,11 @@ static zend_always_inline bool zend_is_scope_ed(const zend_execute_data *ex)
  * (detach attached object; clear forced-unwind state; pop the original call
  * frame from the vm_stack) that doesn't fit the regular fast/mid/slow path.
  * Routed via the ZEND_CALL_SCOPE_FN flag set at ENTER_SCOPE_FUNC. Returns
- * true if the caller should ZEND_VM_RETURN(); false to fall through to
- * LOAD_NEXT_OPLINE / ZEND_VM_LEAVE (with the standard exception check). */
-ZEND_API bool zend_leave_scope_ed(zend_execute_data *scope_ed, uint32_t call_info, zend_execute_data **out_execute_data);
+ * true if the caller should ZEND_VM_RETURN(); false to fall through, in
+ * which case EG(current_execute_data) holds the new frame to install. The
+ * caller cannot pass &execute_data: the VM may keep it in a global register
+ * variable, so loading from EG(current_execute_data) is the supported path. */
+ZEND_API bool zend_leave_scope_ed(zend_execute_data *scope_ed, uint32_t call_info);
 
 static zend_always_inline void zend_vm_init_call_frame(zend_execute_data *call, uint32_t call_info, zend_function *func, uint32_t num_args, void *object_or_called_scope)
 {

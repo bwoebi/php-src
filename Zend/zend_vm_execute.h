@@ -1184,9 +1184,10 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV 
 		 * already disqualified from the fast path, so the common return
 		 * path stays untouched. Pure-observer (non-scope-fn) returns fall
 		 * through to the regular mid/slow paths below. */
-		if (zend_leave_scope_ed(execute_data, call_info, &execute_data)) {
+		if (zend_leave_scope_ed(execute_data, call_info)) {
 			ZEND_VM_RETURN();
 		}
+		execute_data = EG(current_execute_data);
 		if (UNEXPECTED(EG(exception) != NULL)) {
 			zend_rethrow_exception(execute_data);
 			HANDLE_EXCEPTION_LEAVE();
@@ -54610,9 +54611,10 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV  zend
 		 * already disqualified from the fast path, so the common return
 		 * path stays untouched. Pure-observer (non-scope-fn) returns fall
 		 * through to the regular mid/slow paths below. */
-		if (zend_leave_scope_ed(execute_data, call_info, &execute_data)) {
+		if (zend_leave_scope_ed(execute_data, call_info)) {
 			ZEND_VM_RETURN();
 		}
+		execute_data = EG(current_execute_data);
 		if (UNEXPECTED(EG(exception) != NULL)) {
 			zend_rethrow_exception(execute_data);
 			HANDLE_EXCEPTION_LEAVE();
@@ -111588,9 +111590,10 @@ zend_leave_helper_SPEC_LABEL:
 		 * already disqualified from the fast path, so the common return
 		 * path stays untouched. Pure-observer (non-scope-fn) returns fall
 		 * through to the regular mid/slow paths below. */
-		if (zend_leave_scope_ed(execute_data, call_info, &execute_data)) {
+		if (zend_leave_scope_ed(execute_data, call_info)) {
 			ZEND_VM_RETURN();
 		}
+		execute_data = EG(current_execute_data);
 		if (UNEXPECTED(EG(exception) != NULL)) {
 			zend_rethrow_exception(execute_data);
 			HANDLE_EXCEPTION_LEAVE();

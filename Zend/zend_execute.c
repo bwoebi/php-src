@@ -5133,7 +5133,7 @@ ZEND_API void zend_release_scope_fn_closures_ex(zend_execute_data *call)
 	}
 }
 
-ZEND_API bool zend_leave_scope_ed(zend_execute_data *scope_ed, uint32_t call_info, zend_execute_data **out_execute_data)
+ZEND_API bool zend_leave_scope_ed(zend_execute_data *scope_ed, uint32_t call_info)
 {
 	zend_object *closure_obj = ZEND_CLOSURE_OBJECT(scope_ed->func);
 	uintptr_t enp_tag = (uintptr_t)scope_ed->extra_named_params;
@@ -5184,8 +5184,6 @@ ZEND_API bool zend_leave_scope_ed(zend_execute_data *scope_ed, uint32_t call_inf
 	 * they release via zend_generator_free_storage's closure-release path. */
 	OBJ_RELEASE(closure_obj);
 
-	*out_execute_data = scope_ed->prev_execute_data;
-
 	if (UNEXPECTED(call_info & ZEND_CALL_TOP)) {
 		/* TOP: scope_fn body is the fiber body or main script. Suspend before
 		 * the natural fiber-finish so the user can resume and have the Error
@@ -5204,7 +5202,7 @@ ZEND_API bool zend_leave_scope_ed(zend_execute_data *scope_ed, uint32_t call_inf
 		 * above the scope_fn — the user's next resume injects the Error
 		 * there, so it materializes at the scope_fn call site inside the
 		 * fiber body. */
-		zend_fiber_synthetic_suspend(unwind_fiber, *out_execute_data);
+		zend_fiber_synthetic_suspend(unwind_fiber, EG(current_execute_data));
 	}
 
 	return false;
