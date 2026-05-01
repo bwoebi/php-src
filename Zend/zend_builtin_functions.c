@@ -1763,7 +1763,11 @@ static void debug_backtrace_get_args(zend_execute_data *call, zval *arg_array) /
 						ZVAL_DEREF(q);
 						ZVAL_COPY_VALUE(&original_arg, q);
 					} else {
+						/* GCC's -Wmaybe-uninitialized at -O3 doesn't see that
+						 * ZEND_HASH_FILL_SET only reads .value.counted when the
+						 * type is refcounted. Initialize the union explicitly. */
 						ZVAL_NULL(&original_arg);
+						Z_PTR(original_arg) = NULL;
 					}
 					Z_TRY_ADDREF_P(&original_arg);
 					ZEND_HASH_FILL_SET(&original_arg);
