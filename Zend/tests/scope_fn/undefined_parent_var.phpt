@@ -1,5 +1,5 @@
 --TEST--
-Reading an undefined parent CV from a scope-fn body emits the warning with the correct variable name (regression test for crash in zval_undefined_cv)
+Reading an undefined parent CV from a scope-fn body emits the warning with the correct variable name
 --FILE--
 <?php
 function outer() {

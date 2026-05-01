@@ -289,7 +289,10 @@ ZEND_FUNCTION(func_get_arg)
 		RETURN_THROWS();
 	}
 
-	if (ex->func->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
+	if (UNEXPECTED(ex->func->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)) {
+		/* scope-fn declared params live in parent CVs via the literal
+		 * mapping; not directly in ex's arg slots, so the regular path
+		 * below cannot reach them. */
 		uint32_t first_literal = zend_scope_fn_first_literal(&ex->func->op_array);
 		arg = zend_scope_fn_get_arg_zval(ex, requested_offset, first_literal);
 		if (arg && EXPECTED(!Z_ISUNDEF_P(arg))) {
@@ -331,7 +334,11 @@ ZEND_FUNCTION(func_get_args)
 
 	arg_count = ZEND_CALL_NUM_ARGS(ex);
 
-	if (arg_count && (ex->func->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)) {
+	if (arg_count && UNEXPECTED(ex->func->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)) {
+		/* scope-fn declared params live in parent CVs via the literal
+		 * mapping; extras live at the original call frame's tail. The
+		 * single accessor handles both arms — cannot share the regular
+		 * `first_extra_arg` boundary loop below. */
 		uint32_t first_literal = zend_scope_fn_first_literal(&ex->func->op_array);
 		array_init_size(return_value, arg_count);
 		zend_hash_real_init_packed(Z_ARRVAL_P(return_value));
@@ -1747,7 +1754,7 @@ static void debug_backtrace_get_args(zend_execute_data *call, zval *arg_array) /
 		 * (the frame lives in parent's TMP space). Read declared params
 		 * from parent CVs via the literal mapping, extras from the
 		 * original call frame. */
-		if (call->func->type == ZEND_USER_FUNCTION && zend_is_scope_ed(call)) {
+		if (UNEXPECTED(call->func->type == ZEND_USER_FUNCTION && zend_is_scope_ed(call))) {
 			uint32_t first_literal = zend_scope_fn_first_literal(&call->func->op_array);
 			array_init_size(arg_array, num_args);
 			zend_hash_real_init_packed(Z_ARRVAL_P(arg_array));

@@ -1019,25 +1019,6 @@ ZEND_METHOD(Fiber, suspend)
 	zend_fiber_delegate_transfer_result(&transfer, INTERNAL_FUNCTION_PARAM_PASSTHRU);
 }
 
-/* If a parent's exit force-unwound this fiber, the visible escape Error was
- * stashed on the fiber inside the scope_fn boundary handler. Inject it as
- * the in-flight exception of the resumed fiber so the throw materializes at
- * the suspension resumption point inside the fiber body — any try/catch
- * surrounding the suspending call there will see it.
- *
- * Returns a zval* containing the exception value to pass to resume_internal
- * if a deferred throw is pending; otherwise NULL. The caller forwards this
- * zval as the resume value with `exception=true`. */
-static zval *zend_fiber_consume_pending_resume_throw(zend_fiber *fiber, zval *out)
-{
-	if (UNEXPECTED(fiber->pending_resume_throw != NULL)) {
-		ZVAL_OBJ(out, fiber->pending_resume_throw);
-		fiber->pending_resume_throw = NULL;
-		return out;
-	}
-	return NULL;
-}
-
 ZEND_METHOD(Fiber, resume)
 {
 	zend_fiber *fiber;
@@ -1068,10 +1049,18 @@ ZEND_METHOD(Fiber, resume)
 		RETURN_THROWS();
 	}
 
+	/* If a parent's exit force-unwound this fiber, the visible escape Error
+	 * was stashed in pending_resume_throw inside the scope_fn boundary handler.
+	 * Inject it as the in-flight exception of the resumed fiber so the throw
+	 * materializes at the suspension resumption point inside the fiber body. */
 	zval injected;
-	zval *resume_value = zend_fiber_consume_pending_resume_throw(fiber, &injected);
-	bool inject_exception = resume_value != NULL;
-	if (!inject_exception) {
+	bool inject_exception = (fiber->pending_resume_throw != NULL);
+	zval *resume_value;
+	if (UNEXPECTED(inject_exception)) {
+		ZVAL_OBJ(&injected, fiber->pending_resume_throw);
+		fiber->pending_resume_throw = NULL;
+		resume_value = &injected;
+	} else {
 		resume_value = value;
 	}
 
@@ -1118,13 +1107,18 @@ ZEND_METHOD(Fiber, throw)
 		RETURN_THROWS();
 	}
 
+	/* See Fiber::resume above for the deferred-throw mechanism. Here, the
+	 * user's throw chains as the previous of the deferred Error so neither
+	 * is lost. */
 	zval injected;
-	zval *resume_value = zend_fiber_consume_pending_resume_throw(fiber, &injected);
-	bool injected_pending = resume_value != NULL;
-	if (injected_pending) {
-		/* Chain the user's throw as the previous of the deferred Error. */
-		zend_exception_set_previous(Z_OBJ_P(&injected), Z_OBJ_P(exception));
+	bool injected_pending = (fiber->pending_resume_throw != NULL);
+	zval *resume_value;
+	if (UNEXPECTED(injected_pending)) {
+		ZVAL_OBJ(&injected, fiber->pending_resume_throw);
+		fiber->pending_resume_throw = NULL;
+		zend_exception_set_previous(Z_OBJ(injected), Z_OBJ_P(exception));
 		GC_ADDREF(Z_OBJ_P(exception));
+		resume_value = &injected;
 	} else {
 		resume_value = exception;
 	}

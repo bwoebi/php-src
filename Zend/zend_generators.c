@@ -912,10 +912,6 @@ try_again:
 		}
 	}
 	generator->flags &= ~(ZEND_GENERATOR_CURRENTLY_RUNNING | ZEND_GENERATOR_IN_FIBER);
-	generator->fiber_running_me = NULL;
-	if (orig_generator != generator) {
-		orig_generator->fiber_running_me = NULL;
-	}
 
 	generator->frozen_call_stack = NULL;
 	if (EXPECTED(generator->execute_data) &&
@@ -928,23 +924,20 @@ try_again:
 	EG(current_execute_data) = original_execute_data;
 	EG(jit_trace_num) = original_jit_trace_num;
 
-	/* Scope-fn unwind sentinel: thrown into the body when the closure's
-	 * declaring scope is exiting. Finally blocks have already run via the
-	 * normal exception machinery; absorb the sentinel here so it never
-	 * surfaces to user code. The generator was already closed at the
-	 * source of the unwind. */
-	if (UNEXPECTED(EG(exception) != NULL)
-	 && zend_is_scope_fn_unwind(EG(exception))) {
-		OBJ_RELEASE(EG(exception));
-		EG(exception) = NULL;
-	}
-
 	/* If an exception was thrown in the generator we have to internally
 	 * rethrow it in the parent scope.
 	 * In case we did yield from, the Exception must be rethrown into
 	 * its calling frame (see above in if (check_yield_from). */
 	if (UNEXPECTED(EG(exception) != NULL)) {
-		if (generator == orig_generator) {
+		/* Scope-fn unwind sentinel: thrown into the body when the closure's
+		 * declaring scope is exiting. Finally blocks have already run via
+		 * the normal exception machinery; absorb the sentinel here so it
+		 * never surfaces to user code. The generator was already closed at
+		 * the source of the unwind. */
+		if (zend_is_scope_fn_unwind(EG(exception))) {
+			OBJ_RELEASE(EG(exception));
+			EG(exception) = NULL;
+		} else if (generator == orig_generator) {
 			zend_generator_close(generator, false);
 			if (!EG(current_execute_data)) {
 				zend_throw_exception_internal(NULL);
@@ -967,6 +960,10 @@ try_again:
 	}
 
 	orig_generator->flags &= ~(ZEND_GENERATOR_DO_INIT | ZEND_GENERATOR_IN_FIBER);
+	generator->fiber_running_me = NULL;
+	if (orig_generator != generator) {
+		orig_generator->fiber_running_me = NULL;
+	}
 }
 /* }}} */
 

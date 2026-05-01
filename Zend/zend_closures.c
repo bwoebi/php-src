@@ -88,8 +88,25 @@ static bool zend_valid_closure_binding(
 {
 	zend_function *func = &closure->func;
 	if (func->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
-		zend_throw_error(NULL, "Cannot rebind scope of a scope function");
-		return false;
+		/* Scope-fn closures can have their scope rebound (the body still
+		 * sees the same parent CVs — scope only affects access checks),
+		 * but $this must not change: the closure is registered on the
+		 * parent's tracked-temps array as a specific identity, and a
+		 * fresh $this would change calling-method dispatch. */
+		if (newthis != NULL
+		 && (Z_ISUNDEF(closure->this_ptr)
+		  || Z_OBJ_P(newthis) != Z_OBJ(closure->this_ptr))) {
+			zend_throw_error(NULL,
+				"Cannot rebind $this of a scope function");
+			return false;
+		}
+		if (scope && scope->type == ZEND_INTERNAL_CLASS) {
+			zend_throw_error(NULL,
+				"Cannot bind scope function to scope of internal class %s",
+				ZSTR_VAL(scope->name));
+			return false;
+		}
+		return true;
 	}
 	bool is_fake_closure = (func->common.fn_flags & ZEND_ACC_FAKE_CLOSURE) != 0;
 	if (newthis) {
@@ -262,6 +279,17 @@ static void do_closure_bind(zval *return_value, zval *zclosure, zval *newthis, z
 		called_scope = Z_OBJCE_P(newthis);
 	} else {
 		called_scope = ce;
+	}
+
+	if (closure->func.common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
+		/* Mutate in place: the closure object is registered on the parent's
+		 * tracked-temps array; cloning would invalidate that registration
+		 * and the parent's exit cleanup would no longer reach this object.
+		 * $this is unchanged (validated above). */
+		closure->func.common.scope = ce;
+		closure->called_scope = called_scope;
+		ZVAL_OBJ_COPY(return_value, &closure->std);
+		return;
 	}
 
 	zend_create_closure(return_value, &closure->func, ce, called_scope, newthis);

@@ -1,11 +1,14 @@
 --TEST--
-Scope function closure cannot be rebound
+Scope function closure: $this rebind to a different object is rejected
 --FILE--
 <?php
 function test() {
+    /* No $this initially. Binding any $this is forbidden because the
+     * existing this_ptr is undef — the new value is necessarily different. */
     $fn = fn() { return 1; };
     try {
-        $fn2 = Closure::bind($fn, new stdClass);
+        Closure::bind($fn, new stdClass);
+        echo "no error\n";
     } catch (Error $e) {
         echo $e->getMessage() . "\n";
     }
@@ -13,4 +16,4 @@ function test() {
 test();
 ?>
 --EXPECT--
-Cannot rebind scope of a scope function
+Cannot rebind $this of a scope function

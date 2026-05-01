@@ -1741,6 +1741,13 @@ ZEND_API void zend_optimize_script(zend_script *script, zend_long optimization_l
 
 		if (ZEND_OPTIMIZER_PASS_11 & optimization_level) {
 			for (i = 0; i < call_graph.op_arrays_count; i++) {
+				/* Skipped for scope-fn op_arrays: their pass 5 (block_pass)
+				 * runs LATER in the scope-fn loop below. Deduping their
+				 * literal pool here would leave block_pass walking
+				 * shared-pointer dedup'd entries and double-freeing them.
+				 * Re-enabling pass 11 on scope-fn would also need the
+				 * INIT_DYNAMIC_CALL / function-cache slot interactions
+				 * audited (literal-index → cache-key remap). */
 				if (zend_op_array_is_scope_fn(call_graph.op_arrays[i])) {
 					continue;
 				}
@@ -1753,6 +1760,11 @@ ZEND_API void zend_optimize_script(zend_script *script, zend_long optimization_l
 
 		if (ZEND_OPTIMIZER_PASS_13 & optimization_level) {
 			for (i = 0; i < call_graph.op_arrays_count; i++) {
+				/* Scope-fn bodies' CV references are parent-relative offsets
+				 * into the parent's CV table; the parent's pass 13 reaches
+				 * them through scope_fn_visit_parent_cvs. Running compact_vars
+				 * on a scope-fn op_array directly would index out of its own
+				 * (small or empty) last_var. */
 				if (zend_op_array_is_scope_fn(call_graph.op_arrays[i])) {
 					continue;
 				}
@@ -1792,10 +1804,9 @@ ZEND_API void zend_optimize_script(zend_script *script, zend_long optimization_l
 		 * scope-fn bodies, keeps that invariant. */
 		for (i = 0; i < call_graph.op_arrays_count; i++) {
 			op_array = call_graph.op_arrays[i];
-			if (!zend_op_array_is_scope_fn(op_array)) {
-				continue;
+			if (zend_op_array_is_scope_fn(op_array)) {
+				zend_optimize_op_array(op_array, &ctx);
 			}
-			zend_optimize_op_array(op_array, &ctx);
 		}
 
 		/* PASS_12 reads callee->T to compute INIT_FCALL stack sizes; that

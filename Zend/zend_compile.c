@@ -8758,8 +8758,9 @@ static zend_string *zend_begin_func_decl(znode *result, zend_op_array *op_array,
  * scope-fn's portion of the parent frame). `encode=false` reverses it.
  * RECV opcodes appear before ENTER_SCOPE_FUNC and are left alone. */
 static void zend_apply_scope_func_offsets(
-	zend_op_array *scope_op, uint32_t scope_ed_offset, uint32_t scope_frame_size, bool encode)
+	zend_op_array *scope_op, uint32_t scope_ed_offset, uint32_t scope_T, bool encode)
 {
+	uint32_t scope_frame_size = (uint32_t)((ZEND_CALL_FRAME_SLOT + scope_op->last_var + scope_T) * sizeof(zval));
 	uint32_t ed_off = encode ? (uint32_t)-(int32_t)scope_ed_offset : scope_ed_offset;
 	uint32_t fr_off = encode ? (uint32_t)-(int32_t)scope_frame_size : scope_frame_size;
 
@@ -8794,8 +8795,7 @@ static void zend_walk_scope_func_offsets(
 	uint32_t T_base, uint32_t scope_T, bool encode)
 {
 	uint32_t scope_ed_offset = (uint32_t)((ZEND_CALL_FRAME_SLOT + parent_last_var + T_base + scope_T) * sizeof(zval));
-	uint32_t scope_frame_size = (uint32_t)((ZEND_CALL_FRAME_SLOT + scope_op->last_var + scope_T) * sizeof(zval));
-	zend_apply_scope_func_offsets(scope_op, scope_ed_offset, scope_frame_size, encode);
+	zend_apply_scope_func_offsets(scope_op, scope_ed_offset, scope_T, encode);
 
 	for (uint32_t i = 0; i < scope_op->num_dynamic_func_defs; i++) {
 		zend_op_array *nested = scope_op->dynamic_func_defs[i];
@@ -8900,16 +8900,14 @@ ZEND_API uint32_t zend_unfixup_scope_func_self(zend_op_array *scope_op, uint32_t
 			break;
 		}
 	}
-	uint32_t scope_frame_size = (uint32_t)((ZEND_CALL_FRAME_SLOT + scope_op->last_var + scope_T) * sizeof(zval));
-	zend_apply_scope_func_offsets(scope_op, scope_ed_offset, scope_frame_size, /*encode=*/false);
+	zend_apply_scope_func_offsets(scope_op, scope_ed_offset, scope_T, /*encode=*/false);
 	return scope_ed_offset;
 }
 
 ZEND_API void zend_refixup_scope_func_self(zend_op_array *scope_op, uint32_t scope_ed_offset, uint32_t scope_T)
 {
 	ZEND_ASSERT(scope_op->fn_flags2 & ZEND_ACC2_SCOPE_FUNC);
-	uint32_t scope_frame_size = (uint32_t)((ZEND_CALL_FRAME_SLOT + scope_op->last_var + scope_T) * sizeof(zval));
-	zend_apply_scope_func_offsets(scope_op, scope_ed_offset, scope_frame_size, /*encode=*/true);
+	zend_apply_scope_func_offsets(scope_op, scope_ed_offset, scope_T, /*encode=*/true);
 }
 
 static zend_op_array *zend_compile_func_decl_ex(
@@ -9041,10 +9039,8 @@ static zend_op_array *zend_compile_func_decl_ex(
 	if (CG(active_op_array)->fn_flags & ZEND_ACC_GENERATOR) {
 		zend_mark_function_as_generator();
 		/* For scope functions, GENERATOR_CREATE must run AFTER ENTER_SCOPE_FUNC
-		 * (so EX is the scope_ed). It is emitted further below. */
-		if (!is_scope_fn) {
-			zend_emit_op(NULL, ZEND_GENERATOR_CREATE, NULL, NULL);
-		}
+		 * (so EX is the scope_ed). Emitted at the bottom of the scope-fn
+		 * branch below in that case; here for everyone else. */
 	}
 	if (decl->kind == ZEND_AST_ARROW_FUNC) {
 		zend_compile_implicit_closure_uses(&info);
@@ -9098,14 +9094,17 @@ static zend_op_array *zend_compile_func_decl_ex(
 		} else {
 			CG(context).scope_func_parent_op_array = orig_op_array;
 		}
+	}
 
-		/* If this scope fn is also a generator, emit GENERATOR_CREATE here —
-		 * AFTER ENTER_SCOPE_FUNC has switched EX to scope_ed. The
-		 * extended_value=1 marker tells the runtime handler to take the
-		 * scope-fn path: don't memcpy/emalloc, pin generator->execute_data
-		 * to the existing scope_ed, attach to closure. */
-		if (CG(active_op_array)->fn_flags & ZEND_ACC_GENERATOR) {
-			zend_op *gen_create_opline = zend_emit_op(NULL, ZEND_GENERATOR_CREATE, NULL, NULL);
+	/* GENERATOR_CREATE is emitted unconditionally here, after the
+	 * scope-fn branch above. For scope-fn generators, ENTER_SCOPE_FUNC
+	 * must run first (so EX is the scope_ed); the extended_value=1
+	 * marker tells the runtime handler to take the scope-fn path
+	 * (don't memcpy/emalloc, pin generator->execute_data to the
+	 * existing scope_ed, attach to closure). */
+	if (CG(active_op_array)->fn_flags & ZEND_ACC_GENERATOR) {
+		zend_op *gen_create_opline = zend_emit_op(NULL, ZEND_GENERATOR_CREATE, NULL, NULL);
+		if (is_scope_fn) {
 			gen_create_opline->extended_value = 1;
 		}
 	}

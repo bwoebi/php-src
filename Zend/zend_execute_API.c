@@ -1807,6 +1807,12 @@ ZEND_API zend_array *zend_rebuild_symbol_table(void) /* {{{ */
 		return NULL;
 	}
 
+	/* Cache hit: also serves the scope-fn case once the parent's table has
+	 * been built and adopted on the scope-fn frame below. */
+	if (ZEND_CALL_INFO(ex) & ZEND_CALL_HAS_SYMBOL_TABLE) {
+		return ex->symbol_table;
+	}
+
 	/* Scope functions share CVs with their parent — rebuild on the parent
 	 * frame and adopt the result. */
 	if (ex->func->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
@@ -1820,10 +1826,6 @@ ZEND_API zend_array *zend_rebuild_symbol_table(void) /* {{{ */
 			ZEND_ADD_CALL_FLAG(ex, ZEND_CALL_HAS_SYMBOL_TABLE);
 			return symbol_table;
 		}
-	}
-
-	if (ZEND_CALL_INFO(ex) & ZEND_CALL_HAS_SYMBOL_TABLE) {
-		return ex->symbol_table;
 	}
 
 	ZEND_ADD_CALL_FLAG(ex, ZEND_CALL_HAS_SYMBOL_TABLE);

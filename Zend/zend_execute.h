@@ -363,16 +363,30 @@ static zend_always_inline void zend_scope_ed_cleanup(zend_execute_data *scope_ed
 	Z_EXTRA_P(this_ptr) = 0;
 }
 
-/* True iff `ex` is a scope-fn frame. The tag bit is only set by
- * ZEND_ENTER_SCOPE_FUNC, but extra_named_params is not zero-initialized
- * for every frame in the engine — gate on the function flag first to
- * avoid reading a tag bit out of garbage. */
+/* True iff `ex` is a scope-fn frame.
+ *
+ * The fn_flags2 bit identifies "this *function* is a scope-fn closure"; the
+ * tag bit identifies "this *frame* is the scope_ed". The tag is necessary
+ * because non-scope_ed frames of the same function can exist — most notably
+ * a generator's saved execute_data (which lives in heap memory after
+ * GENERATOR_CREATE migrates the scope_ed there) — and they would otherwise
+ * be mis-detected. extra_named_params is not zero-initialized for every
+ * frame in the engine, so we gate on the function flag first to avoid
+ * reading a tag bit out of garbage. */
 static zend_always_inline bool zend_is_scope_ed(const zend_execute_data *ex)
 {
 	return ex->func != NULL
 		&& (ex->func->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)
 		&& ((uintptr_t)ex->extra_named_params & ZEND_SCOPE_ED_ENP_TAG_SCOPE_ED);
 }
+
+/* leave_helper extension: scope-fn frames have their own teardown sequence
+ * (detach attached object; clear forced-unwind state; pop the original call
+ * frame from the vm_stack) that doesn't fit the regular fast/mid/slow path.
+ * Routed via the ZEND_CALL_SCOPE_FN flag set at ENTER_SCOPE_FUNC. Returns
+ * true if the caller should ZEND_VM_RETURN(); false to fall through to
+ * LOAD_NEXT_OPLINE / ZEND_VM_LEAVE (with the standard exception check). */
+ZEND_API bool zend_leave_scope_ed(zend_execute_data *scope_ed, uint32_t call_info, zend_execute_data **out_execute_data);
 
 static zend_always_inline void zend_vm_init_call_frame(zend_execute_data *call, uint32_t call_info, zend_function *func, uint32_t num_args, void *object_or_called_scope)
 {
@@ -447,15 +461,38 @@ static zend_always_inline void zend_vm_stack_free_extra_args(zend_execute_data *
  *         TMP[T-2..] = entries (Z_EXTRA low 8 bits = mode).
  *
  * Guarded by ZEND_CALL_TRACKED_TEMPORARIES flag (shared with ZEND_CALL_FREE_EXTRA_ARGS)
- * and ZEND_ACC2_HAS_TRACKED_TEMPORARIES in fn_flags2. */
+ * and ZEND_ACC2_HAS_TRACKED_TEMPORARIES in fn_flags2. The fn_flags2 flag is
+ * only ever set by pass_two_install on user op_arrays; for internal functions
+ * fn_flags2 is unused, so the bit-test alone is sufficient. */
 #define ZEND_TRACKED_TMP_SCOPE_FUNC 2
 
 ZEND_API void zend_vm_stack_free_tracked_temporaries_ex(zend_execute_data *execute_data);
 
 static zend_always_inline void zend_vm_stack_free_tracked_temporaries(uint32_t call_info, zend_execute_data *execute_data)
 {
-	if (UNEXPECTED((call_info & ZEND_CALL_TRACKED_TEMPORARIES) != 0) && ZEND_USER_CODE(EX(func)->type) && (EX(func)->op_array.fn_flags2 & ZEND_ACC2_HAS_TRACKED_TEMPORARIES)) {
+	if (UNEXPECTED((call_info & ZEND_CALL_TRACKED_TEMPORARIES) != 0) && (EX(func)->common.fn_flags2 & ZEND_ACC2_HAS_TRACKED_TEMPORARIES)) {
 		zend_vm_stack_free_tracked_temporaries_ex(execute_data);
+	}
+}
+
+/* Combined teardown: extra args and tracked temporaries share
+ * ZEND_CALL_FREE_EXTRA_ARGS / ZEND_CALL_TRACKED_TEMPORARIES (same bit), so
+ * checking the bit once and dispatching to both paths in a single branch
+ * keeps leave_helper compact. */
+static zend_always_inline void zend_vm_stack_free_extra_args_and_tracked_temporaries(uint32_t call_info, zend_execute_data *call)
+{
+	if (UNEXPECTED(call_info & ZEND_CALL_FREE_EXTRA_ARGS)) {
+		uint32_t count = ZEND_CALL_NUM_ARGS(call) - call->func->op_array.num_args;
+		if (EXPECTED(count > 0)) {
+			zval *p = ZEND_CALL_VAR_NUM(call, call->func->op_array.last_var + call->func->op_array.T);
+			do {
+				i_zval_ptr_dtor(p);
+				p++;
+			} while (--count);
+		}
+		if (UNEXPECTED(call->func->common.fn_flags2 & ZEND_ACC2_HAS_TRACKED_TEMPORARIES)) {
+			zend_vm_stack_free_tracked_temporaries_ex(call);
+		}
 	}
 }
 
@@ -516,24 +553,34 @@ ZEND_API void ZEND_FASTCALL zend_free_extra_named_params(zend_array *extra_named
 /* Pop the call frame that originally invoked a scope fn from the vm_stack.
  * `original_call_frame` is recovered from a scope_ed's extra_named_params via
  * the SCOPE_ED_ENP_TAG_MASK clear. Frees extra args / extra named params on
- * that frame, then resets vm_stack_top. */
+ * that frame, then pops it.
+ *
+ * If the original frame had ZEND_CALL_ALLOCATED (it landed on its own
+ * vm_stack page), we delegate to zend_vm_stack_free_call_frame_ex to pop
+ * the page and restore the previous one — a plain vm_stack_top reset would
+ * leak the page. */
 static zend_always_inline void zend_scope_ed_pop_original_call_frame(zend_execute_data *original_call_frame)
 {
-	if (original_call_frame) {
-		uint32_t orig_info = ZEND_CALL_INFO(original_call_frame);
-		if (UNEXPECTED(orig_info & ZEND_CALL_FREE_EXTRA_ARGS)) {
-			zend_vm_stack_free_extra_args_ex(orig_info, original_call_frame);
-		}
-		if (UNEXPECTED(orig_info & ZEND_CALL_HAS_EXTRA_NAMED_PARAMS)) {
-			zend_free_extra_named_params(original_call_frame->extra_named_params);
-		}
-		EG(vm_stack_top) = (zval *)original_call_frame;
+	ZEND_ASSERT(original_call_frame != NULL);
+	uint32_t orig_info = ZEND_CALL_INFO(original_call_frame);
+	if (UNEXPECTED(orig_info & ZEND_CALL_FREE_EXTRA_ARGS)) {
+		zend_vm_stack_free_extra_args_ex(orig_info, original_call_frame);
 	}
+	if (UNEXPECTED(orig_info & ZEND_CALL_HAS_EXTRA_NAMED_PARAMS)) {
+		zend_free_extra_named_params(original_call_frame->extra_named_params);
+	}
+	zend_vm_stack_free_call_frame_ex(orig_info, original_call_frame);
 }
 
 /* Find the literal-pool index where a scope-fn op_array's parameter→parent-CV
- * mapping starts. Stored on ENTER_SCOPE_FUNC's op2.num at compile time. The
- * scan is bounded by num_args + a few prologue opcodes. */
+ * mapping starts. Stored on ENTER_SCOPE_FUNC's op2.num at compile time.
+ *
+ * Pinning the mapping at literal index 0 was considered (would drop this
+ * lookup) but requires shifting any literal compile_params already added
+ * (default values, type names) and remapping op*.constant on the
+ * already-emitted RECV/RECV_INIT opcodes. The scan here is bounded by
+ * num_args + a few prologue opcodes; the ENTER_SCOPE_FUNC sits before the
+ * body, so the search terminates fast. */
 static zend_always_inline uint32_t zend_scope_fn_first_literal(const zend_op_array *op_array)
 {
 	ZEND_ASSERT(op_array->fn_flags2 & ZEND_ACC2_SCOPE_FUNC);

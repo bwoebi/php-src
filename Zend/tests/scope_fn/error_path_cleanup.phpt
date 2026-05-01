@@ -14,7 +14,6 @@ function test_recursion() {
     try {
         $fn();
     } catch (Error) {}
-    $ref = null; // release ref before function exit to avoid escape error
 }
 for ($i = 0; $i < 1000; $i++) {
     try { make(); } catch (Error) {}
