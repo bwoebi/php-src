@@ -1504,6 +1504,13 @@ static void zend_optimize_op_array(zend_op_array      *op_array,
 		zend_recalc_live_ranges(op_array, NULL);
 	}
 
+	/* Pass 11 (compact_literals): must run BEFORE redo_pass_two —
+	 * pass_two packs op_array->literals into the opcodes allocation, after
+	 * which erealloc-shrinking literals would corrupt the heap. */
+	if (ZEND_OPTIMIZER_PASS_11 & ctx->optimization_level) {
+		zend_optimizer_compact_literals(op_array, ctx);
+	}
+
 	/* Sandwich close: re-encode using the post-optimize T. If pass 9 shrunk
 	 * T, body TMPs land at the top of the parent's reservation [T_base +
 	 * install_T - new_T, T_base + install_T) — still inside the slots the
@@ -1741,13 +1748,10 @@ ZEND_API void zend_optimize_script(zend_script *script, zend_long optimization_l
 
 		if (ZEND_OPTIMIZER_PASS_11 & optimization_level) {
 			for (i = 0; i < call_graph.op_arrays_count; i++) {
-				/* Skipped for scope-fn op_arrays: their pass 5 (block_pass)
-				 * runs LATER in the scope-fn loop below. Deduping their
-				 * literal pool here would leave block_pass walking
-				 * shared-pointer dedup'd entries and double-freeing them.
-				 * Re-enabling pass 11 on scope-fn would also need the
-				 * INIT_DYNAMIC_CALL / function-cache slot interactions
-				 * audited (literal-index → cache-key remap). */
+				/* Skipped for scope-fn here; it runs after the scope-fn
+				 * loop below (block_pass dtors literals of dead blocks
+				 * before knowing the dedup map, so pass 11 must run
+				 * AFTER block_pass for the same op_array). */
 				if (zend_op_array_is_scope_fn(call_graph.op_arrays[i])) {
 					continue;
 				}

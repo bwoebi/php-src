@@ -1153,24 +1153,6 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV 
 	SAVE_OPLINE();
 #endif
 
-	/* ZEND_CALL_SCOPE_FN is aliased to ZEND_CALL_OBSERVED — set on a scope_ed
-	 * at ENTER_SCOPE_FUNC. The OBSERVED bit also disables ZEND_RETURN's
-	 * cv-to-result move (otherwise it would null the parent CV). Detect
-	 * scope_ed via OBSERVED + fn_flags2 here; the EX(func) deref is paid only
-	 * on OBSERVED-set leaves, not every return. */
-	if (UNEXPECTED(call_info & ZEND_CALL_OBSERVED)
-	 && UNEXPECTED(EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)) {
-		if (zend_leave_scope_ed(execute_data, call_info, &execute_data)) {
-			ZEND_VM_RETURN();
-		}
-		if (UNEXPECTED(EG(exception) != NULL)) {
-			zend_rethrow_exception(execute_data);
-			HANDLE_EXCEPTION_LEAVE();
-		}
-		LOAD_NEXT_OPLINE();
-		ZEND_VM_LEAVE();
-	}
-
 	if (EXPECTED((call_info & (ZEND_CALL_CODE|ZEND_CALL_TOP|ZEND_CALL_HAS_SYMBOL_TABLE|ZEND_CALL_FREE_EXTRA_ARGS|ZEND_CALL_ALLOCATED|ZEND_CALL_HAS_EXTRA_NAMED_PARAMS|ZEND_CALL_OBSERVED)) == 0)) {
 		EG(current_execute_data) = EX(prev_execute_data);
 		i_free_compiled_variables(execute_data);
@@ -1191,6 +1173,24 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV 
 			HANDLE_EXCEPTION_LEAVE();
 		}
 
+		LOAD_NEXT_OPLINE();
+		ZEND_VM_LEAVE();
+	} else if (UNEXPECTED(call_info & ZEND_CALL_OBSERVED)
+	        && UNEXPECTED(EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)) {
+		/* ZEND_CALL_SCOPE_FN is aliased to ZEND_CALL_OBSERVED — set on a
+		 * scope_ed at ENTER_SCOPE_FUNC. The OBSERVED bit also disables
+		 * ZEND_RETURN's cv-to-result move (otherwise it would null the
+		 * parent CV). The EX(func) deref happens only when the call is
+		 * already disqualified from the fast path, so the common return
+		 * path stays untouched. Pure-observer (non-scope-fn) returns fall
+		 * through to the regular mid/slow paths below. */
+		if (zend_leave_scope_ed(execute_data, call_info, &execute_data)) {
+			ZEND_VM_RETURN();
+		}
+		if (UNEXPECTED(EG(exception) != NULL)) {
+			zend_rethrow_exception(execute_data);
+			HANDLE_EXCEPTION_LEAVE();
+		}
 		LOAD_NEXT_OPLINE();
 		ZEND_VM_LEAVE();
 	} else if (EXPECTED((call_info & (ZEND_CALL_CODE|ZEND_CALL_TOP)) == 0)) {
@@ -4240,18 +4240,8 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_ENTER_SCOPE_F
 	zend_execute_data *call_frame = execute_data;
 	uint32_t num_params = opline->op1.num;
 	uint32_t scope_ed_offset = opline->extended_value;
-	uint32_t call_info = EX_CALL_INFO();
 
 	SAVE_OPLINE();
-
-	/* Clear extra_named_params unless the caller actually populated it.
-	 * Call frames don't zero-init the field, and zend_is_scope_ed reads
-	 * its low bit. If we throw below before tagging it ourselves, the
-	 * leave path would otherwise see stale memory and possibly mistake
-	 * a fresh call frame for a scope_ed. */
-	if (!(call_info & ZEND_CALL_HAS_EXTRA_NAMED_PARAMS)) {
-		call_frame->extra_named_params = NULL;
-	}
 
 	parent_ed = (zend_execute_data *)Z_PTR_P(this_ptr);
 	if (UNEXPECTED(!parent_ed)) {
@@ -4288,9 +4278,12 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_ENTER_SCOPE_F
 			ZVAL_COPY_VALUE(dst, src);
 			ZVAL_UNDEF(src);
 			zval_ptr_dtor(&old);
-			if (UNEXPECTED(EG(exception))) {
-				HANDLE_EXCEPTION();
-			}
+		}
+		/* If any destructor in the loop above threw, abandon the swap and
+		 * HANDLE_EXCEPTION at the call_frame level — scope_ed cleanup would
+		 * not be able to walk its CVs anyway. */
+		if (UNEXPECTED(EG(exception))) {
+			HANDLE_EXCEPTION();
 		}
 	}
 
@@ -4302,9 +4295,10 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_ENTER_SCOPE_F
 	scope_ed->symbol_table = parent_ed->symbol_table;
 	scope_ed->run_time_cache = EX(run_time_cache);
 	/* extra_named_params is unused on scope_ed, so we repurpose it to stash
-	 * the original call frame pointer (untagged) plus scope-ed metadata in
-	 * its low bits (see ZEND_SCOPE_ED_ENP_TAG_*). */
-	uintptr_t scope_ed_enp_tag = ZEND_SCOPE_ED_ENP_TAG_SCOPE_ED;
+	 * the original call frame pointer plus an OBJECT_ATTACHED bit in its
+	 * (zval-aligned) low bits. scope-ed-ness itself is identified by
+	 * ZEND_CALL_SCOPE_FN on call_info, not by a tag bit. */
+	uintptr_t scope_ed_enp_tag = 0;
 	if (UNEXPECTED(EG(active_fiber) != NULL
 	            && !(EX(func)->op_array.fn_flags & ZEND_ACC_GENERATOR)
 	            && !zend_pointer_in_vm_stack(EG(vm_stack), scope_ed))) {
@@ -4318,7 +4312,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_ENTER_SCOPE_F
 		zend_object **attached_object_ptr = zend_closure_get_attached_object_ptr(closure_obj);
 		ZEND_ASSERT(*attached_object_ptr == NULL);
 		*attached_object_ptr = &EG(active_fiber)->std;
-		scope_ed_enp_tag |= ZEND_SCOPE_ED_ENP_TAG_OBJECT_ATTACHED;
+		scope_ed_enp_tag = ZEND_SCOPE_ED_ENP_TAG_OBJECT_ATTACHED;
 	}
 	scope_ed->extra_named_params = (zend_array *)((uintptr_t)call_frame | scope_ed_enp_tag);
 
@@ -54571,24 +54565,6 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV  zend
 	SAVE_OPLINE();
 #endif
 
-	/* ZEND_CALL_SCOPE_FN is aliased to ZEND_CALL_OBSERVED — set on a scope_ed
-	 * at ENTER_SCOPE_FUNC. The OBSERVED bit also disables ZEND_RETURN's
-	 * cv-to-result move (otherwise it would null the parent CV). Detect
-	 * scope_ed via OBSERVED + fn_flags2 here; the EX(func) deref is paid only
-	 * on OBSERVED-set leaves, not every return. */
-	if (UNEXPECTED(call_info & ZEND_CALL_OBSERVED)
-	 && UNEXPECTED(EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)) {
-		if (zend_leave_scope_ed(execute_data, call_info, &execute_data)) {
-			ZEND_VM_RETURN();
-		}
-		if (UNEXPECTED(EG(exception) != NULL)) {
-			zend_rethrow_exception(execute_data);
-			HANDLE_EXCEPTION_LEAVE();
-		}
-		LOAD_NEXT_OPLINE();
-		ZEND_VM_LEAVE();
-	}
-
 	if (EXPECTED((call_info & (ZEND_CALL_CODE|ZEND_CALL_TOP|ZEND_CALL_HAS_SYMBOL_TABLE|ZEND_CALL_FREE_EXTRA_ARGS|ZEND_CALL_ALLOCATED|ZEND_CALL_HAS_EXTRA_NAMED_PARAMS|ZEND_CALL_OBSERVED)) == 0)) {
 		EG(current_execute_data) = EX(prev_execute_data);
 		i_free_compiled_variables(execute_data);
@@ -54609,6 +54585,24 @@ static zend_never_inline ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV  zend
 			HANDLE_EXCEPTION_LEAVE();
 		}
 
+		LOAD_NEXT_OPLINE();
+		ZEND_VM_LEAVE();
+	} else if (UNEXPECTED(call_info & ZEND_CALL_OBSERVED)
+	        && UNEXPECTED(EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)) {
+		/* ZEND_CALL_SCOPE_FN is aliased to ZEND_CALL_OBSERVED — set on a
+		 * scope_ed at ENTER_SCOPE_FUNC. The OBSERVED bit also disables
+		 * ZEND_RETURN's cv-to-result move (otherwise it would null the
+		 * parent CV). The EX(func) deref happens only when the call is
+		 * already disqualified from the fast path, so the common return
+		 * path stays untouched. Pure-observer (non-scope-fn) returns fall
+		 * through to the regular mid/slow paths below. */
+		if (zend_leave_scope_ed(execute_data, call_info, &execute_data)) {
+			ZEND_VM_RETURN();
+		}
+		if (UNEXPECTED(EG(exception) != NULL)) {
+			zend_rethrow_exception(execute_data);
+			HANDLE_EXCEPTION_LEAVE();
+		}
 		LOAD_NEXT_OPLINE();
 		ZEND_VM_LEAVE();
 	} else if (EXPECTED((call_info & (ZEND_CALL_CODE|ZEND_CALL_TOP)) == 0)) {
@@ -57542,18 +57536,8 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_ENTER_SCOPE_FUNC_S
 	zend_execute_data *call_frame = execute_data;
 	uint32_t num_params = opline->op1.num;
 	uint32_t scope_ed_offset = opline->extended_value;
-	uint32_t call_info = EX_CALL_INFO();
 
 	SAVE_OPLINE();
-
-	/* Clear extra_named_params unless the caller actually populated it.
-	 * Call frames don't zero-init the field, and zend_is_scope_ed reads
-	 * its low bit. If we throw below before tagging it ourselves, the
-	 * leave path would otherwise see stale memory and possibly mistake
-	 * a fresh call frame for a scope_ed. */
-	if (!(call_info & ZEND_CALL_HAS_EXTRA_NAMED_PARAMS)) {
-		call_frame->extra_named_params = NULL;
-	}
 
 	parent_ed = (zend_execute_data *)Z_PTR_P(this_ptr);
 	if (UNEXPECTED(!parent_ed)) {
@@ -57590,9 +57574,12 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_ENTER_SCOPE_FUNC_S
 			ZVAL_COPY_VALUE(dst, src);
 			ZVAL_UNDEF(src);
 			zval_ptr_dtor(&old);
-			if (UNEXPECTED(EG(exception))) {
-				HANDLE_EXCEPTION();
-			}
+		}
+		/* If any destructor in the loop above threw, abandon the swap and
+		 * HANDLE_EXCEPTION at the call_frame level — scope_ed cleanup would
+		 * not be able to walk its CVs anyway. */
+		if (UNEXPECTED(EG(exception))) {
+			HANDLE_EXCEPTION();
 		}
 	}
 
@@ -57604,9 +57591,10 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_ENTER_SCOPE_FUNC_S
 	scope_ed->symbol_table = parent_ed->symbol_table;
 	scope_ed->run_time_cache = EX(run_time_cache);
 	/* extra_named_params is unused on scope_ed, so we repurpose it to stash
-	 * the original call frame pointer (untagged) plus scope-ed metadata in
-	 * its low bits (see ZEND_SCOPE_ED_ENP_TAG_*). */
-	uintptr_t scope_ed_enp_tag = ZEND_SCOPE_ED_ENP_TAG_SCOPE_ED;
+	 * the original call frame pointer plus an OBJECT_ATTACHED bit in its
+	 * (zval-aligned) low bits. scope-ed-ness itself is identified by
+	 * ZEND_CALL_SCOPE_FN on call_info, not by a tag bit. */
+	uintptr_t scope_ed_enp_tag = 0;
 	if (UNEXPECTED(EG(active_fiber) != NULL
 	            && !(EX(func)->op_array.fn_flags & ZEND_ACC_GENERATOR)
 	            && !zend_pointer_in_vm_stack(EG(vm_stack), scope_ed))) {
@@ -57620,7 +57608,7 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_ENTER_SCOPE_FUNC_S
 		zend_object **attached_object_ptr = zend_closure_get_attached_object_ptr(closure_obj);
 		ZEND_ASSERT(*attached_object_ptr == NULL);
 		*attached_object_ptr = &EG(active_fiber)->std;
-		scope_ed_enp_tag |= ZEND_SCOPE_ED_ENP_TAG_OBJECT_ATTACHED;
+		scope_ed_enp_tag = ZEND_SCOPE_ED_ENP_TAG_OBJECT_ATTACHED;
 	}
 	scope_ed->extra_named_params = (zend_array *)((uintptr_t)call_frame | scope_ed_enp_tag);
 
@@ -111541,24 +111529,6 @@ zend_leave_helper_SPEC_LABEL:
 	SAVE_OPLINE();
 #endif
 
-	/* ZEND_CALL_SCOPE_FN is aliased to ZEND_CALL_OBSERVED — set on a scope_ed
-	 * at ENTER_SCOPE_FUNC. The OBSERVED bit also disables ZEND_RETURN's
-	 * cv-to-result move (otherwise it would null the parent CV). Detect
-	 * scope_ed via OBSERVED + fn_flags2 here; the EX(func) deref is paid only
-	 * on OBSERVED-set leaves, not every return. */
-	if (UNEXPECTED(call_info & ZEND_CALL_OBSERVED)
-	 && UNEXPECTED(EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)) {
-		if (zend_leave_scope_ed(execute_data, call_info, &execute_data)) {
-			ZEND_VM_RETURN();
-		}
-		if (UNEXPECTED(EG(exception) != NULL)) {
-			zend_rethrow_exception(execute_data);
-			HANDLE_EXCEPTION_LEAVE();
-		}
-		LOAD_NEXT_OPLINE();
-		ZEND_VM_LEAVE();
-	}
-
 	if (EXPECTED((call_info & (ZEND_CALL_CODE|ZEND_CALL_TOP|ZEND_CALL_HAS_SYMBOL_TABLE|ZEND_CALL_FREE_EXTRA_ARGS|ZEND_CALL_ALLOCATED|ZEND_CALL_HAS_EXTRA_NAMED_PARAMS|ZEND_CALL_OBSERVED)) == 0)) {
 		EG(current_execute_data) = EX(prev_execute_data);
 		i_free_compiled_variables(execute_data);
@@ -111579,6 +111549,24 @@ zend_leave_helper_SPEC_LABEL:
 			HANDLE_EXCEPTION_LEAVE();
 		}
 
+		LOAD_NEXT_OPLINE();
+		ZEND_VM_LEAVE();
+	} else if (UNEXPECTED(call_info & ZEND_CALL_OBSERVED)
+	        && UNEXPECTED(EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)) {
+		/* ZEND_CALL_SCOPE_FN is aliased to ZEND_CALL_OBSERVED — set on a
+		 * scope_ed at ENTER_SCOPE_FUNC. The OBSERVED bit also disables
+		 * ZEND_RETURN's cv-to-result move (otherwise it would null the
+		 * parent CV). The EX(func) deref happens only when the call is
+		 * already disqualified from the fast path, so the common return
+		 * path stays untouched. Pure-observer (non-scope-fn) returns fall
+		 * through to the regular mid/slow paths below. */
+		if (zend_leave_scope_ed(execute_data, call_info, &execute_data)) {
+			ZEND_VM_RETURN();
+		}
+		if (UNEXPECTED(EG(exception) != NULL)) {
+			zend_rethrow_exception(execute_data);
+			HANDLE_EXCEPTION_LEAVE();
+		}
 		LOAD_NEXT_OPLINE();
 		ZEND_VM_LEAVE();
 	} else if (EXPECTED((call_info & (ZEND_CALL_CODE|ZEND_CALL_TOP)) == 0)) {

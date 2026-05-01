@@ -27,14 +27,11 @@ BEGIN_EXTERN_C()
 #define ZEND_CLOSURE_OBJECT(op_array) \
 	((zend_object*)((char*)(op_array) - sizeof(zend_object)))
 
-/* Tag bits stored in scope_ed->extra_named_params (zval-aligned, low bits free).
- * Bit 0: this is a scope_ed (set by ZEND_ENTER_SCOPE_FUNC, checked by leave_helper).
- * Bit 1: this scope_ed attached an object (Fiber or Generator) to its closure
- *        on enter (must detach on leave). */
-#define ZEND_SCOPE_ED_ENP_TAG_SCOPE_ED        (1u << 0)
-#define ZEND_SCOPE_ED_ENP_TAG_OBJECT_ATTACHED (1u << 1)
-#define ZEND_SCOPE_ED_ENP_TAG_MASK \
-	(ZEND_SCOPE_ED_ENP_TAG_SCOPE_ED | ZEND_SCOPE_ED_ENP_TAG_OBJECT_ATTACHED)
+/* Tag bit stored in scope_ed->extra_named_params (zval-aligned, low bits free).
+ * Set when this scope_ed attached an object (Fiber or Generator) to its
+ * closure on enter — must detach on leave. */
+#define ZEND_SCOPE_ED_ENP_TAG_OBJECT_ATTACHED (1u << 0)
+#define ZEND_SCOPE_ED_ENP_TAG_MASK            ZEND_SCOPE_ED_ENP_TAG_OBJECT_ATTACHED
 
 void zend_register_closure_ce(void);
 void zend_closure_bind_var(zval *closure_zv, zend_string *var_name, zval *var);

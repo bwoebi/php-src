@@ -365,19 +365,17 @@ static zend_always_inline void zend_scope_ed_cleanup(zend_execute_data *scope_ed
 
 /* True iff `ex` is a scope-fn frame.
  *
- * The fn_flags2 bit identifies "this *function* is a scope-fn closure"; the
- * tag bit identifies "this *frame* is the scope_ed". The tag is necessary
- * because non-scope_ed frames of the same function can exist — most notably
- * a generator's saved execute_data (which lives in heap memory after
- * GENERATOR_CREATE migrates the scope_ed there) — and they would otherwise
- * be mis-detected. extra_named_params is not zero-initialized for every
- * frame in the engine, so we gate on the function flag first to avoid
- * reading a tag bit out of garbage. */
+ * fn_flags2 says "this *function* is a scope-fn closure"; the call_info
+ * ZEND_CALL_SCOPE_FN bit is set only on the scope_ed (at ENTER_SCOPE_FUNC),
+ * so it distinguishes the scope_ed from the original call frame that runs
+ * INIT_DYNAMIC_CALL → RECVs → ENTER_SCOPE_FUNC. We require both: an
+ * observer plugin may set ZEND_CALL_OBSERVED (alias of ZEND_CALL_SCOPE_FN)
+ * on call frames of any function, so the bit alone is not specific. */
 static zend_always_inline bool zend_is_scope_ed(const zend_execute_data *ex)
 {
 	return ex->func != NULL
-		&& (ex->func->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)
-		&& ((uintptr_t)ex->extra_named_params & ZEND_SCOPE_ED_ENP_TAG_SCOPE_ED);
+		&& (ZEND_CALL_INFO(ex) & ZEND_CALL_SCOPE_FN)
+		&& (ex->func->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC);
 }
 
 /* leave_helper extension: scope-fn frames have their own teardown sequence
