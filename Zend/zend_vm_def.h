@@ -4704,7 +4704,7 @@ ZEND_VM_COLD_CONST_HANDLER(111, ZEND_RETURN_BY_REF, CONST|TMP|VAR|CV, ANY, SRC, 
 	ZEND_VM_DISPATCH_TO_HELPER(zend_leave_helper);
 }
 
-ZEND_VM_HANDLER(139, ZEND_GENERATOR_CREATE, ANY, ANY)
+ZEND_VM_HANDLER(139, ZEND_GENERATOR_CREATE, ANY, ANY, SPEC(SCOPE_FN))
 {
 	zval *return_value = EX(return_value);
 
@@ -4716,13 +4716,14 @@ ZEND_VM_HANDLER(139, ZEND_GENERATOR_CREATE, ANY, ANY)
 
 		SAVE_OPLINE();
 
-		/* Scope-fn variant (compile-time emits extended_value=1): EX is the
-		 * scope_ed, which lives inside the parent function's frame. We must
-		 * NOT memcpy/emalloc — the body's CV accesses use negative offsets
-		 * that only work when the frame stays in place. The scope_ed itself
-		 * IS the generator's execute_data. The generator is attached to the
-		 * closure so parent-exit cleanup can force-destruct it. */
-		bool is_scope_fn = UNEXPECTED(opline->extended_value == 1);
+		/* SPEC(SCOPE_FN) selects the variant via opline->extended_value bit 0.
+		 * Scope-fn variant: EX is the scope_ed, which lives inside the parent
+		 * function's frame. We must NOT memcpy/emalloc — the body's CV
+		 * accesses use negative offsets that only work when the frame stays
+		 * in place. The scope_ed itself IS the generator's execute_data. The
+		 * generator is attached to the closure so parent-exit cleanup can
+		 * force-destruct it. */
+		bool is_scope_fn = ZEND_VM_IS_SCOPE_FN;
 		ZEND_ASSERT(!is_scope_fn || zend_is_scope_ed(execute_data));
 
 		/* Capture EX(This)'s original call_info before we OR in TOP_FUNCTION |
@@ -9778,7 +9779,7 @@ ZEND_VM_HANDLER(171, ZEND_FUNC_NUM_ARGS, UNUSED, UNUSED)
 	ZEND_VM_NEXT_OPCODE();
 }
 
-ZEND_VM_HANDLER(172, ZEND_FUNC_GET_ARGS, UNUSED|CONST, UNUSED)
+ZEND_VM_HANDLER(172, ZEND_FUNC_GET_ARGS, UNUSED|CONST, UNUSED, SPEC(SCOPE_FN))
 {
 	USE_OPLINE
 	zend_array *ht;
@@ -9797,21 +9798,21 @@ ZEND_VM_HANDLER(172, ZEND_FUNC_GET_ARGS, UNUSED|CONST, UNUSED)
 		result_size = arg_count;
 	}
 
-	/* Scope functions: declared params live in the parent's CVs and extras
-	 * in the original call frame — neither at the scope_ed's own arg slots.
-	 * Both arms (declared via the literal mapping; extras via the original
-	 * frame's tail) are handled by zend_scope_fn_get_arg_zval, so a single
-	 * loop covers `i < arg_count` here without a separate first_extra_arg
-	 * boundary like the regular path below. */
-	if (result_size && UNEXPECTED(EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)) {
+	/* SPEC(SCOPE_FN): the scope-fn variant skips the regular path entirely
+	 * via the explicit return below. The non-scope-fn variant collapses this
+	 * if (0) and the C compiler eliminates the body. Both arms — declared
+	 * params via the literal mapping and extras via the original call
+	 * frame's tail — are handled by zend_scope_fn_get_arg_zval, so a single
+	 * loop covers `i < arg_count` without the regular path's
+	 * first_extra_arg boundary. */
+	if (ZEND_VM_IS_SCOPE_FN && result_size) {
 		SAVE_OPLINE();
-		uint32_t first_literal = zend_scope_fn_first_literal(&EX(func)->op_array);
 		ht = zend_new_array(result_size);
 		ZVAL_ARR(EX_VAR(opline->result.var), ht);
 		zend_hash_real_init_packed(ht);
 		ZEND_HASH_FILL_PACKED(ht) {
 			for (uint32_t i = skip; i < arg_count; i++) {
-				zval *q = zend_scope_fn_get_arg_zval(execute_data, i, first_literal);
+				zval *q = zend_scope_fn_get_arg_zval(execute_data, i);
 				if (q && EXPECTED(Z_TYPE_INFO_P(q) != IS_UNDEF)) {
 					ZVAL_DEREF(q);
 					Z_TRY_ADDREF_P(q);
@@ -9825,7 +9826,7 @@ ZEND_VM_HANDLER(172, ZEND_FUNC_GET_ARGS, UNUSED|CONST, UNUSED)
 		ZEND_VM_NEXT_OPCODE_CHECK_EXCEPTION();
 	}
 
-	if (result_size) {
+	if (!ZEND_VM_IS_SCOPE_FN && result_size) {
 		SAVE_OPLINE();
 		uint32_t first_extra_arg = EX(func)->op_array.num_args;
 
@@ -10868,11 +10869,10 @@ ZEND_VM_HANDLER(213, ZEND_ENTER_SCOPE_FUNC, ANY, ANY)
 	 * the swap and HANDLE_EXCEPTION at the call_frame level — scope_ed
 	 * cleanup would not be able to walk its CVs anyway. */
 	if (num_params > 0) {
-		uint32_t first_literal = opline->op2.num;
 		zval *literals = EX(func)->op_array.literals;
 		for (uint32_t i = 0; i < num_params; i++) {
 			zval *src = ZEND_CALL_ARG(call_frame, i + 1);
-			uint32_t parent_cv_offset = (uint32_t)Z_LVAL(literals[first_literal + i]);
+			uint32_t parent_cv_offset = (uint32_t)Z_LVAL(literals[i]);
 			zval *dst = ZEND_CALL_VAR(parent_ed, parent_cv_offset);
 			zval old;
 			ZVAL_COPY_VALUE(&old, dst);

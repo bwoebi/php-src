@@ -466,12 +466,12 @@ static zend_always_inline void zend_vm_stack_free_extra_args(zend_execute_data *
  * fn_flags2 is unused, so the bit-test alone is sufficient. */
 #define ZEND_TRACKED_TMP_SCOPE_FUNC 2
 
-ZEND_API void zend_vm_stack_free_tracked_temporaries_ex(zend_execute_data *execute_data);
+ZEND_API void zend_release_scope_fn_closures_ex(zend_execute_data *execute_data);
 
 static zend_always_inline void zend_vm_stack_free_tracked_temporaries(uint32_t call_info, zend_execute_data *execute_data)
 {
 	if (UNEXPECTED((call_info & ZEND_CALL_TRACKED_TEMPORARIES) != 0) && (EX(func)->common.fn_flags2 & ZEND_ACC2_HAS_TRACKED_TEMPORARIES)) {
-		zend_vm_stack_free_tracked_temporaries_ex(execute_data);
+		zend_release_scope_fn_closures_ex(execute_data);
 	}
 }
 
@@ -491,7 +491,7 @@ static zend_always_inline void zend_vm_stack_free_extra_args_and_tracked_tempora
 			} while (--count);
 		}
 		if (UNEXPECTED(call->func->common.fn_flags2 & ZEND_ACC2_HAS_TRACKED_TEMPORARIES)) {
-			zend_vm_stack_free_tracked_temporaries_ex(call);
+			zend_release_scope_fn_closures_ex(call);
 		}
 	}
 }
@@ -572,26 +572,6 @@ static zend_always_inline void zend_scope_ed_pop_original_call_frame(zend_execut
 	zend_vm_stack_free_call_frame_ex(orig_info, original_call_frame);
 }
 
-/* Find the literal-pool index where a scope-fn op_array's parameter→parent-CV
- * mapping starts. Stored on ENTER_SCOPE_FUNC's op2.num at compile time.
- *
- * Pinning the mapping at literal index 0 was considered (would drop this
- * lookup) but requires shifting any literal compile_params already added
- * (default values, type names) and remapping op*.constant on the
- * already-emitted RECV/RECV_INIT opcodes. The scan here is bounded by
- * num_args + a few prologue opcodes; the ENTER_SCOPE_FUNC sits before the
- * body, so the search terminates fast. */
-static zend_always_inline uint32_t zend_scope_fn_first_literal(const zend_op_array *op_array)
-{
-	ZEND_ASSERT(op_array->fn_flags2 & ZEND_ACC2_SCOPE_FUNC);
-	for (uint32_t j = 0; j < op_array->last; j++) {
-		if (op_array->opcodes[j].opcode == ZEND_ENTER_SCOPE_FUNC) {
-			return op_array->opcodes[j].op2.num;
-		}
-	}
-	ZEND_UNREACHABLE();
-}
-
 /* For a scope-fn frame (ZEND_ACC2_SCOPE_FUNC): return the top-level parent
  * execute_data, recovered from the closure's stash. NULL if the parent has
  * already exited (lifetime error). */
@@ -602,13 +582,13 @@ static zend_always_inline zend_execute_data *zend_scope_fn_parent_ed(const zend_
 }
 
 /* Resolve a scope-fn's i-th argument zval. For declared params (i < num_args)
- * the slot lives in the parent's CV table via the literal mapping; for extras
- * it lives at the tail of the original call frame. Returns NULL if the parent
- * frame has gone away (lifetime error) or there is no original call frame
- * for an extra-arg lookup. `first_literal` should come from
- * zend_scope_fn_first_literal(scope_ed->func->op_array). */
+ * the slot lives in the parent's CV table via the literal mapping at
+ * op_array->literals[i] (pinned by compile-time pre-reservation and by
+ * compact_literals); for extras it lives at the tail of the original call
+ * frame. Returns NULL if the parent frame has gone away (lifetime error) or
+ * there is no original call frame for an extra-arg lookup. */
 static zend_always_inline zval *zend_scope_fn_get_arg_zval(
-	const zend_execute_data *scope_ed, uint32_t i, uint32_t first_literal)
+	const zend_execute_data *scope_ed, uint32_t i)
 {
 	const zend_op_array *op_array = &scope_ed->func->op_array;
 	if (i < op_array->num_args) {
@@ -616,7 +596,7 @@ static zend_always_inline zval *zend_scope_fn_get_arg_zval(
 		if (UNEXPECTED(!parent_ed)) {
 			return NULL;
 		}
-		uint32_t parent_cv_offset = (uint32_t)Z_LVAL(op_array->literals[first_literal + i]);
+		uint32_t parent_cv_offset = (uint32_t)Z_LVAL(op_array->literals[i]);
 		return ZEND_CALL_VAR(parent_ed, parent_cv_offset);
 	}
 	zend_execute_data *call_frame = (zend_execute_data *)

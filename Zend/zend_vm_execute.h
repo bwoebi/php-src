@@ -318,6 +318,7 @@ static uint8_t zend_user_opcodes[256] = {0,
 #define SPEC_RULE_COMMUTATIVE  0x00800000
 #define SPEC_RULE_ISSET        0x01000000
 #define SPEC_RULE_OBSERVER     0x02000000
+#define SPEC_RULE_SCOPE_FN     0x04000000
 
 static const uint32_t *zend_spec_handlers;
 static zend_vm_opcode_handler_t const *zend_opcode_handlers;
@@ -2349,13 +2350,141 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_GENERATOR_CRE
 
 		SAVE_OPLINE();
 
-		/* Scope-fn variant (compile-time emits extended_value=1): EX is the
-		 * scope_ed, which lives inside the parent function's frame. We must
-		 * NOT memcpy/emalloc — the body's CV accesses use negative offsets
-		 * that only work when the frame stays in place. The scope_ed itself
-		 * IS the generator's execute_data. The generator is attached to the
-		 * closure so parent-exit cleanup can force-destruct it. */
-		bool is_scope_fn = UNEXPECTED(opline->extended_value == 1);
+		/* SPEC(SCOPE_FN) selects the variant via opline->extended_value bit 0.
+		 * Scope-fn variant: EX is the scope_ed, which lives inside the parent
+		 * function's frame. We must NOT memcpy/emalloc — the body's CV
+		 * accesses use negative offsets that only work when the frame stays
+		 * in place. The scope_ed itself IS the generator's execute_data. The
+		 * generator is attached to the closure so parent-exit cleanup can
+		 * force-destruct it. */
+		bool is_scope_fn = 0;
+		ZEND_ASSERT(!is_scope_fn || zend_is_scope_ed(execute_data));
+
+		/* Capture EX(This)'s original call_info before we OR in TOP_FUNCTION |
+		 * GENERATOR. The scope-fn leave path checks ZEND_CALL_TOP against the
+		 * pre-modification value (TOP_FUNCTION includes TOP). */
+		uint32_t orig_call_info = EX_CALL_INFO();
+
+		object_init_ex(return_value, zend_ce_generator);
+
+		if (is_scope_fn) {
+			gen_execute_data = execute_data;
+		} else {
+			/*
+			 * Normally the execute_data is allocated on the VM stack (because it does
+			 * not actually do any allocation and thus is faster). For generators
+			 * though this behavior would be suboptimal, because the (rather large)
+			 * structure would have to be copied back and forth every time execution is
+			 * suspended or resumed. That's why for generators the execution context
+			 * is allocated on heap.
+			 */
+			num_args = EX_NUM_ARGS();
+			if (EXPECTED(num_args <= EX(func)->op_array.num_args)) {
+				used_stack = (ZEND_CALL_FRAME_SLOT + EX(func)->op_array.last_var + EX(func)->op_array.T) * sizeof(zval);
+				gen_execute_data = (zend_execute_data*)emalloc(used_stack);
+				used_stack = (ZEND_CALL_FRAME_SLOT + EX(func)->op_array.last_var) * sizeof(zval);
+			} else {
+				used_stack = (ZEND_CALL_FRAME_SLOT + num_args + EX(func)->op_array.last_var + EX(func)->op_array.T - EX(func)->op_array.num_args) * sizeof(zval);
+				gen_execute_data = (zend_execute_data*)emalloc(used_stack);
+			}
+			memcpy(gen_execute_data, execute_data, used_stack);
+		}
+
+		/* Save execution context in generator object. */
+		generator = (zend_generator *) Z_OBJ_P(return_value);
+		generator->func = gen_execute_data->func;
+		generator->execute_data = gen_execute_data;
+		generator->frozen_call_stack = NULL;
+		generator->execute_fake.opline = NULL;
+		generator->execute_fake.func = NULL;
+		generator->execute_fake.prev_execute_data = NULL;
+		ZVAL_OBJ(&generator->execute_fake.This, (zend_object *) generator);
+
+		gen_execute_data->opline = opline;
+		gen_execute_data->return_value = (zval*)generator;
+		call_info = Z_TYPE_INFO(EX(This));
+		if (!is_scope_fn) {
+			if ((call_info & Z_TYPE_MASK) == IS_OBJECT
+			 && (!(call_info & (ZEND_CALL_CLOSURE|ZEND_CALL_RELEASE_THIS))
+				 /* Bug #72523 */
+				|| UNEXPECTED(zend_execute_ex != execute_ex))) {
+				ZEND_ADD_CALL_FLAG_EX(call_info, ZEND_CALL_RELEASE_THIS);
+				Z_ADDREF(gen_execute_data->This);
+			}
+			/* scope_ed lives in parent's TMP, not heap-allocated. */
+			ZEND_ADD_CALL_FLAG_EX(call_info, ZEND_CALL_ALLOCATED);
+			/* scope-fn keeps prev_execute_data — body CV access traverses it. */
+			gen_execute_data->prev_execute_data = NULL;
+		}
+		ZEND_ADD_CALL_FLAG_EX(call_info, (ZEND_CALL_TOP_FUNCTION | ZEND_CALL_GENERATOR));
+		Z_TYPE_INFO(gen_execute_data->This) = call_info;
+
+		if (is_scope_fn) {
+			/* Attach the generator to the closure. ENTER_SCOPE_FUNC skips
+			 * attaching a fiber for generator scope fns (the body doesn't
+			 * run in the active fiber's context). */
+			zend_object *closure_obj = ZEND_CLOSURE_OBJECT(EX(func));
+			zend_object **attached_object_ptr =
+				zend_closure_get_attached_object_ptr(closure_obj);
+			ZEND_ASSERT(*attached_object_ptr == NULL);
+			*attached_object_ptr = &generator->std;
+
+			uintptr_t enp_tag = (uintptr_t)execute_data->extra_named_params;
+			zend_execute_data *original_call_frame =
+				(zend_execute_data *)(enp_tag & ~(uintptr_t)ZEND_SCOPE_ED_ENP_TAG_MASK);
+			execute_data->extra_named_params = (zend_array *)(enp_tag | ZEND_SCOPE_ED_ENP_TAG_OBJECT_ATTACHED);
+
+			EG(current_execute_data) = EX(prev_execute_data);
+			execute_data = EX(prev_execute_data);
+			zend_scope_ed_pop_original_call_frame(original_call_frame);
+			if (UNEXPECTED(orig_call_info & ZEND_CALL_TOP)) {
+				ZEND_VM_RETURN();
+			}
+			LOAD_NEXT_OPLINE();
+			ZEND_VM_LEAVE();
+		}
+
+		call_info = EX_CALL_INFO();
+		EG(current_execute_data) = EX(prev_execute_data);
+		if (EXPECTED(!(call_info & (ZEND_CALL_TOP|ZEND_CALL_ALLOCATED)))) {
+			EG(vm_stack_top) = (zval*)execute_data;
+			execute_data = EX(prev_execute_data);
+			LOAD_NEXT_OPLINE();
+			ZEND_VM_LEAVE();
+		} else if (EXPECTED(!(call_info & ZEND_CALL_TOP))) {
+			zend_execute_data *old_execute_data = execute_data;
+			execute_data = EX(prev_execute_data);
+			zend_vm_stack_free_call_frame_ex(call_info, old_execute_data);
+			LOAD_NEXT_OPLINE();
+			ZEND_VM_LEAVE();
+		} else {
+			ZEND_VM_RETURN();
+		}
+	} else {
+		ZEND_VM_TAIL_CALL(zend_leave_helper_SPEC(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU));
+	}
+}
+
+static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_GENERATOR_CREATE_SPEC_SCOPE_FN_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
+{
+	zval *return_value = EX(return_value);
+
+	if (EXPECTED(return_value)) {
+		USE_OPLINE
+		zend_generator *generator;
+		zend_execute_data *gen_execute_data;
+		uint32_t num_args, used_stack, call_info;
+
+		SAVE_OPLINE();
+
+		/* SPEC(SCOPE_FN) selects the variant via opline->extended_value bit 0.
+		 * Scope-fn variant: EX is the scope_ed, which lives inside the parent
+		 * function's frame. We must NOT memcpy/emalloc — the body's CV
+		 * accesses use negative offsets that only work when the frame stays
+		 * in place. The scope_ed itself IS the generator's execute_data. The
+		 * generator is attached to the closure so parent-exit cleanup can
+		 * force-destruct it. */
+		bool is_scope_fn = 1;
 		ZEND_ASSERT(!is_scope_fn || zend_is_scope_ed(execute_data));
 
 		/* Capture EX(This)'s original call_info before we OR in TOP_FUNCTION |
@@ -4149,11 +4278,10 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_ENTER_SCOPE_F
 	 * the swap and HANDLE_EXCEPTION at the call_frame level — scope_ed
 	 * cleanup would not be able to walk its CVs anyway. */
 	if (num_params > 0) {
-		uint32_t first_literal = opline->op2.num;
 		zval *literals = EX(func)->op_array.literals;
 		for (uint32_t i = 0; i < num_params; i++) {
 			zval *src = ZEND_CALL_ARG(call_frame, i + 1);
-			uint32_t parent_cv_offset = (uint32_t)Z_LVAL(literals[first_literal + i]);
+			uint32_t parent_cv_offset = (uint32_t)Z_LVAL(literals[i]);
 			zval *dst = ZEND_CALL_VAR(parent_ed, parent_cv_offset);
 			zval old;
 			ZVAL_COPY_VALUE(&old, dst);
@@ -12087,21 +12215,21 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_FUNC_GET_ARGS
 		result_size = arg_count;
 	}
 
-	/* Scope functions: declared params live in the parent's CVs and extras
-	 * in the original call frame — neither at the scope_ed's own arg slots.
-	 * Both arms (declared via the literal mapping; extras via the original
-	 * frame's tail) are handled by zend_scope_fn_get_arg_zval, so a single
-	 * loop covers `i < arg_count` here without a separate first_extra_arg
-	 * boundary like the regular path below. */
-	if (result_size && UNEXPECTED(EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)) {
+	/* SPEC(SCOPE_FN): the scope-fn variant skips the regular path entirely
+	 * via the explicit return below. The non-scope-fn variant collapses this
+	 * if (0) and the C compiler eliminates the body. Both arms — declared
+	 * params via the literal mapping and extras via the original call
+	 * frame's tail — are handled by zend_scope_fn_get_arg_zval, so a single
+	 * loop covers `i < arg_count` without the regular path's
+	 * first_extra_arg boundary. */
+	if (0 && result_size) {
 		SAVE_OPLINE();
-		uint32_t first_literal = zend_scope_fn_first_literal(&EX(func)->op_array);
 		ht = zend_new_array(result_size);
 		ZVAL_ARR(EX_VAR(opline->result.var), ht);
 		zend_hash_real_init_packed(ht);
 		ZEND_HASH_FILL_PACKED(ht) {
 			for (uint32_t i = skip; i < arg_count; i++) {
-				zval *q = zend_scope_fn_get_arg_zval(execute_data, i, first_literal);
+				zval *q = zend_scope_fn_get_arg_zval(execute_data, i);
 				if (q && EXPECTED(Z_TYPE_INFO_P(q) != IS_UNDEF)) {
 					ZVAL_DEREF(q);
 					Z_TRY_ADDREF_P(q);
@@ -12115,7 +12243,112 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_FUNC_GET_ARGS
 		ZEND_VM_NEXT_OPCODE_CHECK_EXCEPTION();
 	}
 
-	if (result_size) {
+	if (!0 && result_size) {
+		SAVE_OPLINE();
+		uint32_t first_extra_arg = EX(func)->op_array.num_args;
+
+		ht = zend_new_array(result_size);
+		ZVAL_ARR(EX_VAR(opline->result.var), ht);
+		zend_hash_real_init_packed(ht);
+		ZEND_HASH_FILL_PACKED(ht) {
+			zval *p, *q;
+			uint32_t i = skip;
+			p = EX_VAR_NUM(i);
+			if (arg_count > first_extra_arg) {
+				while (i < first_extra_arg) {
+					q = p;
+					if (EXPECTED(Z_TYPE_INFO_P(q) != IS_UNDEF)) {
+						ZVAL_DEREF(q);
+						if (Z_OPT_REFCOUNTED_P(q)) {
+							Z_ADDREF_P(q);
+						}
+						ZEND_HASH_FILL_SET(q);
+					} else {
+						ZEND_HASH_FILL_SET_NULL();
+					}
+					ZEND_HASH_FILL_NEXT();
+					p++;
+					i++;
+				}
+				if (skip < first_extra_arg) {
+					skip = 0;
+				} else {
+					skip -= first_extra_arg;
+				}
+				p = EX_VAR_NUM(EX(func)->op_array.last_var + EX(func)->op_array.T + skip);
+			}
+			while (i < arg_count) {
+				q = p;
+				if (EXPECTED(Z_TYPE_INFO_P(q) != IS_UNDEF)) {
+					ZVAL_DEREF(q);
+					if (Z_OPT_REFCOUNTED_P(q)) {
+						Z_ADDREF_P(q);
+					}
+					ZEND_HASH_FILL_SET(q);
+				} else {
+					ZEND_HASH_FILL_SET_NULL();
+				}
+				ZEND_HASH_FILL_NEXT();
+				p++;
+				i++;
+			}
+		} ZEND_HASH_FILL_END();
+		ht->nNumOfElements = result_size;
+	} else {
+		ZVAL_EMPTY_ARRAY(EX_VAR(opline->result.var));
+	}
+	ZEND_VM_NEXT_OPCODE();
+}
+
+/* Contrary to what its name indicates, ZEND_COPY_TMP may receive and define references. */
+static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_FUNC_GET_ARGS_SPEC_CONST_UNUSED_SCOPE_FN_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
+{
+	USE_OPLINE
+	zend_array *ht;
+	uint32_t arg_count, result_size, skip;
+
+	arg_count = EX_NUM_ARGS();
+	if (IS_CONST == IS_CONST) {
+		skip = Z_LVAL_P(RT_CONSTANT(opline, opline->op1));
+		if (arg_count < skip) {
+			result_size = 0;
+		} else {
+			result_size = arg_count - skip;
+		}
+	} else {
+		skip = 0;
+		result_size = arg_count;
+	}
+
+	/* SPEC(SCOPE_FN): the scope-fn variant skips the regular path entirely
+	 * via the explicit return below. The non-scope-fn variant collapses this
+	 * if (0) and the C compiler eliminates the body. Both arms — declared
+	 * params via the literal mapping and extras via the original call
+	 * frame's tail — are handled by zend_scope_fn_get_arg_zval, so a single
+	 * loop covers `i < arg_count` without the regular path's
+	 * first_extra_arg boundary. */
+	if (1 && result_size) {
+		SAVE_OPLINE();
+		ht = zend_new_array(result_size);
+		ZVAL_ARR(EX_VAR(opline->result.var), ht);
+		zend_hash_real_init_packed(ht);
+		ZEND_HASH_FILL_PACKED(ht) {
+			for (uint32_t i = skip; i < arg_count; i++) {
+				zval *q = zend_scope_fn_get_arg_zval(execute_data, i);
+				if (q && EXPECTED(Z_TYPE_INFO_P(q) != IS_UNDEF)) {
+					ZVAL_DEREF(q);
+					Z_TRY_ADDREF_P(q);
+					ZEND_HASH_FILL_SET(q);
+				} else {
+					ZEND_HASH_FILL_SET_NULL();
+				}
+				ZEND_HASH_FILL_NEXT();
+			}
+		} ZEND_HASH_FILL_END();
+		ZEND_VM_NEXT_OPCODE_CHECK_EXCEPTION();
+	}
+
+	if (!1 && result_size) {
 		SAVE_OPLINE();
 		uint32_t first_extra_arg = EX(func)->op_array.num_args;
 
@@ -37692,21 +37925,21 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_FUNC_GET_ARGS
 		result_size = arg_count;
 	}
 
-	/* Scope functions: declared params live in the parent's CVs and extras
-	 * in the original call frame — neither at the scope_ed's own arg slots.
-	 * Both arms (declared via the literal mapping; extras via the original
-	 * frame's tail) are handled by zend_scope_fn_get_arg_zval, so a single
-	 * loop covers `i < arg_count` here without a separate first_extra_arg
-	 * boundary like the regular path below. */
-	if (result_size && UNEXPECTED(EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)) {
+	/* SPEC(SCOPE_FN): the scope-fn variant skips the regular path entirely
+	 * via the explicit return below. The non-scope-fn variant collapses this
+	 * if (0) and the C compiler eliminates the body. Both arms — declared
+	 * params via the literal mapping and extras via the original call
+	 * frame's tail — are handled by zend_scope_fn_get_arg_zval, so a single
+	 * loop covers `i < arg_count` without the regular path's
+	 * first_extra_arg boundary. */
+	if (0 && result_size) {
 		SAVE_OPLINE();
-		uint32_t first_literal = zend_scope_fn_first_literal(&EX(func)->op_array);
 		ht = zend_new_array(result_size);
 		ZVAL_ARR(EX_VAR(opline->result.var), ht);
 		zend_hash_real_init_packed(ht);
 		ZEND_HASH_FILL_PACKED(ht) {
 			for (uint32_t i = skip; i < arg_count; i++) {
-				zval *q = zend_scope_fn_get_arg_zval(execute_data, i, first_literal);
+				zval *q = zend_scope_fn_get_arg_zval(execute_data, i);
 				if (q && EXPECTED(Z_TYPE_INFO_P(q) != IS_UNDEF)) {
 					ZVAL_DEREF(q);
 					Z_TRY_ADDREF_P(q);
@@ -37720,7 +37953,112 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_FUNC_GET_ARGS
 		ZEND_VM_NEXT_OPCODE_CHECK_EXCEPTION();
 	}
 
-	if (result_size) {
+	if (!0 && result_size) {
+		SAVE_OPLINE();
+		uint32_t first_extra_arg = EX(func)->op_array.num_args;
+
+		ht = zend_new_array(result_size);
+		ZVAL_ARR(EX_VAR(opline->result.var), ht);
+		zend_hash_real_init_packed(ht);
+		ZEND_HASH_FILL_PACKED(ht) {
+			zval *p, *q;
+			uint32_t i = skip;
+			p = EX_VAR_NUM(i);
+			if (arg_count > first_extra_arg) {
+				while (i < first_extra_arg) {
+					q = p;
+					if (EXPECTED(Z_TYPE_INFO_P(q) != IS_UNDEF)) {
+						ZVAL_DEREF(q);
+						if (Z_OPT_REFCOUNTED_P(q)) {
+							Z_ADDREF_P(q);
+						}
+						ZEND_HASH_FILL_SET(q);
+					} else {
+						ZEND_HASH_FILL_SET_NULL();
+					}
+					ZEND_HASH_FILL_NEXT();
+					p++;
+					i++;
+				}
+				if (skip < first_extra_arg) {
+					skip = 0;
+				} else {
+					skip -= first_extra_arg;
+				}
+				p = EX_VAR_NUM(EX(func)->op_array.last_var + EX(func)->op_array.T + skip);
+			}
+			while (i < arg_count) {
+				q = p;
+				if (EXPECTED(Z_TYPE_INFO_P(q) != IS_UNDEF)) {
+					ZVAL_DEREF(q);
+					if (Z_OPT_REFCOUNTED_P(q)) {
+						Z_ADDREF_P(q);
+					}
+					ZEND_HASH_FILL_SET(q);
+				} else {
+					ZEND_HASH_FILL_SET_NULL();
+				}
+				ZEND_HASH_FILL_NEXT();
+				p++;
+				i++;
+			}
+		} ZEND_HASH_FILL_END();
+		ht->nNumOfElements = result_size;
+	} else {
+		ZVAL_EMPTY_ARRAY(EX_VAR(opline->result.var));
+	}
+	ZEND_VM_NEXT_OPCODE();
+}
+
+/* Contrary to what its name indicates, ZEND_COPY_TMP may receive and define references. */
+static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_FUNC_CCONV ZEND_FUNC_GET_ARGS_SPEC_UNUSED_UNUSED_SCOPE_FN_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
+{
+	USE_OPLINE
+	zend_array *ht;
+	uint32_t arg_count, result_size, skip;
+
+	arg_count = EX_NUM_ARGS();
+	if (IS_UNUSED == IS_CONST) {
+		skip = Z_LVAL_P(RT_CONSTANT(opline, opline->op1));
+		if (arg_count < skip) {
+			result_size = 0;
+		} else {
+			result_size = arg_count - skip;
+		}
+	} else {
+		skip = 0;
+		result_size = arg_count;
+	}
+
+	/* SPEC(SCOPE_FN): the scope-fn variant skips the regular path entirely
+	 * via the explicit return below. The non-scope-fn variant collapses this
+	 * if (0) and the C compiler eliminates the body. Both arms — declared
+	 * params via the literal mapping and extras via the original call
+	 * frame's tail — are handled by zend_scope_fn_get_arg_zval, so a single
+	 * loop covers `i < arg_count` without the regular path's
+	 * first_extra_arg boundary. */
+	if (1 && result_size) {
+		SAVE_OPLINE();
+		ht = zend_new_array(result_size);
+		ZVAL_ARR(EX_VAR(opline->result.var), ht);
+		zend_hash_real_init_packed(ht);
+		ZEND_HASH_FILL_PACKED(ht) {
+			for (uint32_t i = skip; i < arg_count; i++) {
+				zval *q = zend_scope_fn_get_arg_zval(execute_data, i);
+				if (q && EXPECTED(Z_TYPE_INFO_P(q) != IS_UNDEF)) {
+					ZVAL_DEREF(q);
+					Z_TRY_ADDREF_P(q);
+					ZEND_HASH_FILL_SET(q);
+				} else {
+					ZEND_HASH_FILL_SET_NULL();
+				}
+				ZEND_HASH_FILL_NEXT();
+			}
+		} ZEND_HASH_FILL_END();
+		ZEND_VM_NEXT_OPCODE_CHECK_EXCEPTION();
+	}
+
+	if (!1 && result_size) {
 		SAVE_OPLINE();
 		uint32_t first_extra_arg = EX(func)->op_array.num_args;
 
@@ -55430,13 +55768,141 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_GENERATOR_CREATE_S
 
 		SAVE_OPLINE();
 
-		/* Scope-fn variant (compile-time emits extended_value=1): EX is the
-		 * scope_ed, which lives inside the parent function's frame. We must
-		 * NOT memcpy/emalloc — the body's CV accesses use negative offsets
-		 * that only work when the frame stays in place. The scope_ed itself
-		 * IS the generator's execute_data. The generator is attached to the
-		 * closure so parent-exit cleanup can force-destruct it. */
-		bool is_scope_fn = UNEXPECTED(opline->extended_value == 1);
+		/* SPEC(SCOPE_FN) selects the variant via opline->extended_value bit 0.
+		 * Scope-fn variant: EX is the scope_ed, which lives inside the parent
+		 * function's frame. We must NOT memcpy/emalloc — the body's CV
+		 * accesses use negative offsets that only work when the frame stays
+		 * in place. The scope_ed itself IS the generator's execute_data. The
+		 * generator is attached to the closure so parent-exit cleanup can
+		 * force-destruct it. */
+		bool is_scope_fn = 0;
+		ZEND_ASSERT(!is_scope_fn || zend_is_scope_ed(execute_data));
+
+		/* Capture EX(This)'s original call_info before we OR in TOP_FUNCTION |
+		 * GENERATOR. The scope-fn leave path checks ZEND_CALL_TOP against the
+		 * pre-modification value (TOP_FUNCTION includes TOP). */
+		uint32_t orig_call_info = EX_CALL_INFO();
+
+		object_init_ex(return_value, zend_ce_generator);
+
+		if (is_scope_fn) {
+			gen_execute_data = execute_data;
+		} else {
+			/*
+			 * Normally the execute_data is allocated on the VM stack (because it does
+			 * not actually do any allocation and thus is faster). For generators
+			 * though this behavior would be suboptimal, because the (rather large)
+			 * structure would have to be copied back and forth every time execution is
+			 * suspended or resumed. That's why for generators the execution context
+			 * is allocated on heap.
+			 */
+			num_args = EX_NUM_ARGS();
+			if (EXPECTED(num_args <= EX(func)->op_array.num_args)) {
+				used_stack = (ZEND_CALL_FRAME_SLOT + EX(func)->op_array.last_var + EX(func)->op_array.T) * sizeof(zval);
+				gen_execute_data = (zend_execute_data*)emalloc(used_stack);
+				used_stack = (ZEND_CALL_FRAME_SLOT + EX(func)->op_array.last_var) * sizeof(zval);
+			} else {
+				used_stack = (ZEND_CALL_FRAME_SLOT + num_args + EX(func)->op_array.last_var + EX(func)->op_array.T - EX(func)->op_array.num_args) * sizeof(zval);
+				gen_execute_data = (zend_execute_data*)emalloc(used_stack);
+			}
+			memcpy(gen_execute_data, execute_data, used_stack);
+		}
+
+		/* Save execution context in generator object. */
+		generator = (zend_generator *) Z_OBJ_P(return_value);
+		generator->func = gen_execute_data->func;
+		generator->execute_data = gen_execute_data;
+		generator->frozen_call_stack = NULL;
+		generator->execute_fake.opline = NULL;
+		generator->execute_fake.func = NULL;
+		generator->execute_fake.prev_execute_data = NULL;
+		ZVAL_OBJ(&generator->execute_fake.This, (zend_object *) generator);
+
+		gen_execute_data->opline = opline;
+		gen_execute_data->return_value = (zval*)generator;
+		call_info = Z_TYPE_INFO(EX(This));
+		if (!is_scope_fn) {
+			if ((call_info & Z_TYPE_MASK) == IS_OBJECT
+			 && (!(call_info & (ZEND_CALL_CLOSURE|ZEND_CALL_RELEASE_THIS))
+				 /* Bug #72523 */
+				|| UNEXPECTED(zend_execute_ex != execute_ex))) {
+				ZEND_ADD_CALL_FLAG_EX(call_info, ZEND_CALL_RELEASE_THIS);
+				Z_ADDREF(gen_execute_data->This);
+			}
+			/* scope_ed lives in parent's TMP, not heap-allocated. */
+			ZEND_ADD_CALL_FLAG_EX(call_info, ZEND_CALL_ALLOCATED);
+			/* scope-fn keeps prev_execute_data — body CV access traverses it. */
+			gen_execute_data->prev_execute_data = NULL;
+		}
+		ZEND_ADD_CALL_FLAG_EX(call_info, (ZEND_CALL_TOP_FUNCTION | ZEND_CALL_GENERATOR));
+		Z_TYPE_INFO(gen_execute_data->This) = call_info;
+
+		if (is_scope_fn) {
+			/* Attach the generator to the closure. ENTER_SCOPE_FUNC skips
+			 * attaching a fiber for generator scope fns (the body doesn't
+			 * run in the active fiber's context). */
+			zend_object *closure_obj = ZEND_CLOSURE_OBJECT(EX(func));
+			zend_object **attached_object_ptr =
+				zend_closure_get_attached_object_ptr(closure_obj);
+			ZEND_ASSERT(*attached_object_ptr == NULL);
+			*attached_object_ptr = &generator->std;
+
+			uintptr_t enp_tag = (uintptr_t)execute_data->extra_named_params;
+			zend_execute_data *original_call_frame =
+				(zend_execute_data *)(enp_tag & ~(uintptr_t)ZEND_SCOPE_ED_ENP_TAG_MASK);
+			execute_data->extra_named_params = (zend_array *)(enp_tag | ZEND_SCOPE_ED_ENP_TAG_OBJECT_ATTACHED);
+
+			EG(current_execute_data) = EX(prev_execute_data);
+			execute_data = EX(prev_execute_data);
+			zend_scope_ed_pop_original_call_frame(original_call_frame);
+			if (UNEXPECTED(orig_call_info & ZEND_CALL_TOP)) {
+				ZEND_VM_RETURN();
+			}
+			LOAD_NEXT_OPLINE();
+			ZEND_VM_LEAVE();
+		}
+
+		call_info = EX_CALL_INFO();
+		EG(current_execute_data) = EX(prev_execute_data);
+		if (EXPECTED(!(call_info & (ZEND_CALL_TOP|ZEND_CALL_ALLOCATED)))) {
+			EG(vm_stack_top) = (zval*)execute_data;
+			execute_data = EX(prev_execute_data);
+			LOAD_NEXT_OPLINE();
+			ZEND_VM_LEAVE();
+		} else if (EXPECTED(!(call_info & ZEND_CALL_TOP))) {
+			zend_execute_data *old_execute_data = execute_data;
+			execute_data = EX(prev_execute_data);
+			zend_vm_stack_free_call_frame_ex(call_info, old_execute_data);
+			LOAD_NEXT_OPLINE();
+			ZEND_VM_LEAVE();
+		} else {
+			ZEND_VM_RETURN();
+		}
+	} else {
+		ZEND_VM_DISPATCH_TO_LEAVE_HELPER(zend_leave_helper_SPEC_TAILCALL);
+	}
+}
+
+static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_GENERATOR_CREATE_SPEC_SCOPE_FN_TAILCALL_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
+{
+	zval *return_value = EX(return_value);
+
+	if (EXPECTED(return_value)) {
+		USE_OPLINE
+		zend_generator *generator;
+		zend_execute_data *gen_execute_data;
+		uint32_t num_args, used_stack, call_info;
+
+		SAVE_OPLINE();
+
+		/* SPEC(SCOPE_FN) selects the variant via opline->extended_value bit 0.
+		 * Scope-fn variant: EX is the scope_ed, which lives inside the parent
+		 * function's frame. We must NOT memcpy/emalloc — the body's CV
+		 * accesses use negative offsets that only work when the frame stays
+		 * in place. The scope_ed itself IS the generator's execute_data. The
+		 * generator is attached to the closure so parent-exit cleanup can
+		 * force-destruct it. */
+		bool is_scope_fn = 1;
 		ZEND_ASSERT(!is_scope_fn || zend_is_scope_ed(execute_data));
 
 		/* Capture EX(This)'s original call_info before we OR in TOP_FUNCTION |
@@ -57114,11 +57580,10 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_ENTER_SCOPE_FUNC_S
 	 * the swap and HANDLE_EXCEPTION at the call_frame level — scope_ed
 	 * cleanup would not be able to walk its CVs anyway. */
 	if (num_params > 0) {
-		uint32_t first_literal = opline->op2.num;
 		zval *literals = EX(func)->op_array.literals;
 		for (uint32_t i = 0; i < num_params; i++) {
 			zval *src = ZEND_CALL_ARG(call_frame, i + 1);
-			uint32_t parent_cv_offset = (uint32_t)Z_LVAL(literals[first_literal + i]);
+			uint32_t parent_cv_offset = (uint32_t)Z_LVAL(literals[i]);
 			zval *dst = ZEND_CALL_VAR(parent_ed, parent_cv_offset);
 			zval old;
 			ZVAL_COPY_VALUE(&old, dst);
@@ -64950,21 +65415,21 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_FUNC_GET_ARGS_SPEC
 		result_size = arg_count;
 	}
 
-	/* Scope functions: declared params live in the parent's CVs and extras
-	 * in the original call frame — neither at the scope_ed's own arg slots.
-	 * Both arms (declared via the literal mapping; extras via the original
-	 * frame's tail) are handled by zend_scope_fn_get_arg_zval, so a single
-	 * loop covers `i < arg_count` here without a separate first_extra_arg
-	 * boundary like the regular path below. */
-	if (result_size && UNEXPECTED(EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)) {
+	/* SPEC(SCOPE_FN): the scope-fn variant skips the regular path entirely
+	 * via the explicit return below. The non-scope-fn variant collapses this
+	 * if (0) and the C compiler eliminates the body. Both arms — declared
+	 * params via the literal mapping and extras via the original call
+	 * frame's tail — are handled by zend_scope_fn_get_arg_zval, so a single
+	 * loop covers `i < arg_count` without the regular path's
+	 * first_extra_arg boundary. */
+	if (0 && result_size) {
 		SAVE_OPLINE();
-		uint32_t first_literal = zend_scope_fn_first_literal(&EX(func)->op_array);
 		ht = zend_new_array(result_size);
 		ZVAL_ARR(EX_VAR(opline->result.var), ht);
 		zend_hash_real_init_packed(ht);
 		ZEND_HASH_FILL_PACKED(ht) {
 			for (uint32_t i = skip; i < arg_count; i++) {
-				zval *q = zend_scope_fn_get_arg_zval(execute_data, i, first_literal);
+				zval *q = zend_scope_fn_get_arg_zval(execute_data, i);
 				if (q && EXPECTED(Z_TYPE_INFO_P(q) != IS_UNDEF)) {
 					ZVAL_DEREF(q);
 					Z_TRY_ADDREF_P(q);
@@ -64978,7 +65443,112 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_FUNC_GET_ARGS_SPEC
 		ZEND_VM_NEXT_OPCODE_CHECK_EXCEPTION();
 	}
 
-	if (result_size) {
+	if (!0 && result_size) {
+		SAVE_OPLINE();
+		uint32_t first_extra_arg = EX(func)->op_array.num_args;
+
+		ht = zend_new_array(result_size);
+		ZVAL_ARR(EX_VAR(opline->result.var), ht);
+		zend_hash_real_init_packed(ht);
+		ZEND_HASH_FILL_PACKED(ht) {
+			zval *p, *q;
+			uint32_t i = skip;
+			p = EX_VAR_NUM(i);
+			if (arg_count > first_extra_arg) {
+				while (i < first_extra_arg) {
+					q = p;
+					if (EXPECTED(Z_TYPE_INFO_P(q) != IS_UNDEF)) {
+						ZVAL_DEREF(q);
+						if (Z_OPT_REFCOUNTED_P(q)) {
+							Z_ADDREF_P(q);
+						}
+						ZEND_HASH_FILL_SET(q);
+					} else {
+						ZEND_HASH_FILL_SET_NULL();
+					}
+					ZEND_HASH_FILL_NEXT();
+					p++;
+					i++;
+				}
+				if (skip < first_extra_arg) {
+					skip = 0;
+				} else {
+					skip -= first_extra_arg;
+				}
+				p = EX_VAR_NUM(EX(func)->op_array.last_var + EX(func)->op_array.T + skip);
+			}
+			while (i < arg_count) {
+				q = p;
+				if (EXPECTED(Z_TYPE_INFO_P(q) != IS_UNDEF)) {
+					ZVAL_DEREF(q);
+					if (Z_OPT_REFCOUNTED_P(q)) {
+						Z_ADDREF_P(q);
+					}
+					ZEND_HASH_FILL_SET(q);
+				} else {
+					ZEND_HASH_FILL_SET_NULL();
+				}
+				ZEND_HASH_FILL_NEXT();
+				p++;
+				i++;
+			}
+		} ZEND_HASH_FILL_END();
+		ht->nNumOfElements = result_size;
+	} else {
+		ZVAL_EMPTY_ARRAY(EX_VAR(opline->result.var));
+	}
+	ZEND_VM_NEXT_OPCODE();
+}
+
+/* Contrary to what its name indicates, ZEND_COPY_TMP may receive and define references. */
+static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_FUNC_GET_ARGS_SPEC_CONST_UNUSED_SCOPE_FN_TAILCALL_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
+{
+	USE_OPLINE
+	zend_array *ht;
+	uint32_t arg_count, result_size, skip;
+
+	arg_count = EX_NUM_ARGS();
+	if (IS_CONST == IS_CONST) {
+		skip = Z_LVAL_P(RT_CONSTANT(opline, opline->op1));
+		if (arg_count < skip) {
+			result_size = 0;
+		} else {
+			result_size = arg_count - skip;
+		}
+	} else {
+		skip = 0;
+		result_size = arg_count;
+	}
+
+	/* SPEC(SCOPE_FN): the scope-fn variant skips the regular path entirely
+	 * via the explicit return below. The non-scope-fn variant collapses this
+	 * if (0) and the C compiler eliminates the body. Both arms — declared
+	 * params via the literal mapping and extras via the original call
+	 * frame's tail — are handled by zend_scope_fn_get_arg_zval, so a single
+	 * loop covers `i < arg_count` without the regular path's
+	 * first_extra_arg boundary. */
+	if (1 && result_size) {
+		SAVE_OPLINE();
+		ht = zend_new_array(result_size);
+		ZVAL_ARR(EX_VAR(opline->result.var), ht);
+		zend_hash_real_init_packed(ht);
+		ZEND_HASH_FILL_PACKED(ht) {
+			for (uint32_t i = skip; i < arg_count; i++) {
+				zval *q = zend_scope_fn_get_arg_zval(execute_data, i);
+				if (q && EXPECTED(Z_TYPE_INFO_P(q) != IS_UNDEF)) {
+					ZVAL_DEREF(q);
+					Z_TRY_ADDREF_P(q);
+					ZEND_HASH_FILL_SET(q);
+				} else {
+					ZEND_HASH_FILL_SET_NULL();
+				}
+				ZEND_HASH_FILL_NEXT();
+			}
+		} ZEND_HASH_FILL_END();
+		ZEND_VM_NEXT_OPCODE_CHECK_EXCEPTION();
+	}
+
+	if (!1 && result_size) {
 		SAVE_OPLINE();
 		uint32_t first_extra_arg = EX(func)->op_array.num_args;
 
@@ -90455,21 +91025,21 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_FUNC_GET_ARGS_SPEC
 		result_size = arg_count;
 	}
 
-	/* Scope functions: declared params live in the parent's CVs and extras
-	 * in the original call frame — neither at the scope_ed's own arg slots.
-	 * Both arms (declared via the literal mapping; extras via the original
-	 * frame's tail) are handled by zend_scope_fn_get_arg_zval, so a single
-	 * loop covers `i < arg_count` here without a separate first_extra_arg
-	 * boundary like the regular path below. */
-	if (result_size && UNEXPECTED(EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)) {
+	/* SPEC(SCOPE_FN): the scope-fn variant skips the regular path entirely
+	 * via the explicit return below. The non-scope-fn variant collapses this
+	 * if (0) and the C compiler eliminates the body. Both arms — declared
+	 * params via the literal mapping and extras via the original call
+	 * frame's tail — are handled by zend_scope_fn_get_arg_zval, so a single
+	 * loop covers `i < arg_count` without the regular path's
+	 * first_extra_arg boundary. */
+	if (0 && result_size) {
 		SAVE_OPLINE();
-		uint32_t first_literal = zend_scope_fn_first_literal(&EX(func)->op_array);
 		ht = zend_new_array(result_size);
 		ZVAL_ARR(EX_VAR(opline->result.var), ht);
 		zend_hash_real_init_packed(ht);
 		ZEND_HASH_FILL_PACKED(ht) {
 			for (uint32_t i = skip; i < arg_count; i++) {
-				zval *q = zend_scope_fn_get_arg_zval(execute_data, i, first_literal);
+				zval *q = zend_scope_fn_get_arg_zval(execute_data, i);
 				if (q && EXPECTED(Z_TYPE_INFO_P(q) != IS_UNDEF)) {
 					ZVAL_DEREF(q);
 					Z_TRY_ADDREF_P(q);
@@ -90483,7 +91053,112 @@ static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_FUNC_GET_ARGS_SPEC
 		ZEND_VM_NEXT_OPCODE_CHECK_EXCEPTION();
 	}
 
-	if (result_size) {
+	if (!0 && result_size) {
+		SAVE_OPLINE();
+		uint32_t first_extra_arg = EX(func)->op_array.num_args;
+
+		ht = zend_new_array(result_size);
+		ZVAL_ARR(EX_VAR(opline->result.var), ht);
+		zend_hash_real_init_packed(ht);
+		ZEND_HASH_FILL_PACKED(ht) {
+			zval *p, *q;
+			uint32_t i = skip;
+			p = EX_VAR_NUM(i);
+			if (arg_count > first_extra_arg) {
+				while (i < first_extra_arg) {
+					q = p;
+					if (EXPECTED(Z_TYPE_INFO_P(q) != IS_UNDEF)) {
+						ZVAL_DEREF(q);
+						if (Z_OPT_REFCOUNTED_P(q)) {
+							Z_ADDREF_P(q);
+						}
+						ZEND_HASH_FILL_SET(q);
+					} else {
+						ZEND_HASH_FILL_SET_NULL();
+					}
+					ZEND_HASH_FILL_NEXT();
+					p++;
+					i++;
+				}
+				if (skip < first_extra_arg) {
+					skip = 0;
+				} else {
+					skip -= first_extra_arg;
+				}
+				p = EX_VAR_NUM(EX(func)->op_array.last_var + EX(func)->op_array.T + skip);
+			}
+			while (i < arg_count) {
+				q = p;
+				if (EXPECTED(Z_TYPE_INFO_P(q) != IS_UNDEF)) {
+					ZVAL_DEREF(q);
+					if (Z_OPT_REFCOUNTED_P(q)) {
+						Z_ADDREF_P(q);
+					}
+					ZEND_HASH_FILL_SET(q);
+				} else {
+					ZEND_HASH_FILL_SET_NULL();
+				}
+				ZEND_HASH_FILL_NEXT();
+				p++;
+				i++;
+			}
+		} ZEND_HASH_FILL_END();
+		ht->nNumOfElements = result_size;
+	} else {
+		ZVAL_EMPTY_ARRAY(EX_VAR(opline->result.var));
+	}
+	ZEND_VM_NEXT_OPCODE();
+}
+
+/* Contrary to what its name indicates, ZEND_COPY_TMP may receive and define references. */
+static ZEND_OPCODE_HANDLER_RET ZEND_OPCODE_HANDLER_CCONV ZEND_FUNC_GET_ARGS_SPEC_UNUSED_UNUSED_SCOPE_FN_TAILCALL_HANDLER(ZEND_OPCODE_HANDLER_ARGS)
+{
+	USE_OPLINE
+	zend_array *ht;
+	uint32_t arg_count, result_size, skip;
+
+	arg_count = EX_NUM_ARGS();
+	if (IS_UNUSED == IS_CONST) {
+		skip = Z_LVAL_P(RT_CONSTANT(opline, opline->op1));
+		if (arg_count < skip) {
+			result_size = 0;
+		} else {
+			result_size = arg_count - skip;
+		}
+	} else {
+		skip = 0;
+		result_size = arg_count;
+	}
+
+	/* SPEC(SCOPE_FN): the scope-fn variant skips the regular path entirely
+	 * via the explicit return below. The non-scope-fn variant collapses this
+	 * if (0) and the C compiler eliminates the body. Both arms — declared
+	 * params via the literal mapping and extras via the original call
+	 * frame's tail — are handled by zend_scope_fn_get_arg_zval, so a single
+	 * loop covers `i < arg_count` without the regular path's
+	 * first_extra_arg boundary. */
+	if (1 && result_size) {
+		SAVE_OPLINE();
+		ht = zend_new_array(result_size);
+		ZVAL_ARR(EX_VAR(opline->result.var), ht);
+		zend_hash_real_init_packed(ht);
+		ZEND_HASH_FILL_PACKED(ht) {
+			for (uint32_t i = skip; i < arg_count; i++) {
+				zval *q = zend_scope_fn_get_arg_zval(execute_data, i);
+				if (q && EXPECTED(Z_TYPE_INFO_P(q) != IS_UNDEF)) {
+					ZVAL_DEREF(q);
+					Z_TRY_ADDREF_P(q);
+					ZEND_HASH_FILL_SET(q);
+				} else {
+					ZEND_HASH_FILL_SET_NULL();
+				}
+				ZEND_HASH_FILL_NEXT();
+			}
+		} ZEND_HASH_FILL_END();
+		ZEND_VM_NEXT_OPCODE_CHECK_EXCEPTION();
+	}
+
+	if (!1 && result_size) {
 		SAVE_OPLINE();
 		uint32_t first_extra_arg = EX(func)->op_array.num_args;
 
@@ -109548,6 +110223,7 @@ ZEND_API void execute_ex(zend_execute_data *ex)
 			(void*)&&ZEND_INSTANCEOF_SPEC_CV_UNUSED_LABEL,
 			(void*)&&ZEND_NULL_LABEL,
 			(void*)&&ZEND_GENERATOR_CREATE_SPEC_LABEL,
+			(void*)&&ZEND_GENERATOR_CREATE_SPEC_SCOPE_FN_LABEL,
 			(void*)&&ZEND_NULL_LABEL,
 			(void*)&&ZEND_NULL_LABEL,
 			(void*)&&ZEND_MAKE_REF_SPEC_VAR_UNUSED_LABEL,
@@ -109688,9 +110364,14 @@ ZEND_API void execute_ex(zend_execute_data *ex)
 			(void*)&&ZEND_SPACESHIP_SPEC_CV_CV_LABEL,
 			(void*)&&ZEND_FUNC_NUM_ARGS_SPEC_UNUSED_UNUSED_LABEL,
 			(void*)&&ZEND_FUNC_GET_ARGS_SPEC_CONST_UNUSED_LABEL,
+			(void*)&&ZEND_FUNC_GET_ARGS_SPEC_CONST_UNUSED_SCOPE_FN_LABEL,
+			(void*)&&ZEND_NULL_LABEL,
+			(void*)&&ZEND_NULL_LABEL,
 			(void*)&&ZEND_NULL_LABEL,
 			(void*)&&ZEND_NULL_LABEL,
 			(void*)&&ZEND_FUNC_GET_ARGS_SPEC_UNUSED_UNUSED_LABEL,
+			(void*)&&ZEND_FUNC_GET_ARGS_SPEC_UNUSED_UNUSED_SCOPE_FN_LABEL,
+			(void*)&&ZEND_NULL_LABEL,
 			(void*)&&ZEND_NULL_LABEL,
 			(void*)&&ZEND_FETCH_STATIC_PROP_R_SPEC_LABEL,
 			(void*)&&ZEND_FETCH_STATIC_PROP_W_SPEC_LABEL,
@@ -111087,6 +111768,11 @@ zend_leave_helper_SPEC_LABEL:
 				ZEND_GENERATOR_CREATE_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
 				VM_TRACE_OP_END(ZEND_GENERATOR_CREATE_SPEC)
 				HYBRID_BREAK();
+			HYBRID_CASE(ZEND_GENERATOR_CREATE_SPEC_SCOPE_FN):
+				VM_TRACE(ZEND_GENERATOR_CREATE_SPEC_SCOPE_FN)
+				ZEND_GENERATOR_CREATE_SPEC_SCOPE_FN_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_GENERATOR_CREATE_SPEC_SCOPE_FN)
+				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_SEND_UNPACK_SPEC):
 				VM_TRACE(ZEND_SEND_UNPACK_SPEC)
 				ZEND_SEND_UNPACK_SPEC_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
@@ -112235,6 +112921,11 @@ zend_leave_helper_SPEC_LABEL:
 				VM_TRACE(ZEND_FUNC_GET_ARGS_SPEC_CONST_UNUSED)
 				ZEND_FUNC_GET_ARGS_SPEC_CONST_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
 				VM_TRACE_OP_END(ZEND_FUNC_GET_ARGS_SPEC_CONST_UNUSED)
+				HYBRID_BREAK();
+			HYBRID_CASE(ZEND_FUNC_GET_ARGS_SPEC_CONST_UNUSED_SCOPE_FN):
+				VM_TRACE(ZEND_FUNC_GET_ARGS_SPEC_CONST_UNUSED_SCOPE_FN)
+				ZEND_FUNC_GET_ARGS_SPEC_CONST_UNUSED_SCOPE_FN_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FUNC_GET_ARGS_SPEC_CONST_UNUSED_SCOPE_FN)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_INIT_PARENT_PROPERTY_HOOK_CALL_SPEC_CONST_UNUSED):
 				VM_TRACE(ZEND_INIT_PARENT_PROPERTY_HOOK_CALL_SPEC_CONST_UNUSED)
@@ -114734,6 +115425,11 @@ zend_leave_helper_SPEC_LABEL:
 				VM_TRACE(ZEND_FUNC_GET_ARGS_SPEC_UNUSED_UNUSED)
 				ZEND_FUNC_GET_ARGS_SPEC_UNUSED_UNUSED_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
 				VM_TRACE_OP_END(ZEND_FUNC_GET_ARGS_SPEC_UNUSED_UNUSED)
+				HYBRID_BREAK();
+			HYBRID_CASE(ZEND_FUNC_GET_ARGS_SPEC_UNUSED_UNUSED_SCOPE_FN):
+				VM_TRACE(ZEND_FUNC_GET_ARGS_SPEC_UNUSED_UNUSED_SCOPE_FN)
+				ZEND_FUNC_GET_ARGS_SPEC_UNUSED_UNUSED_SCOPE_FN_HANDLER(ZEND_OPCODE_HANDLER_ARGS_PASSTHRU);
+				VM_TRACE_OP_END(ZEND_FUNC_GET_ARGS_SPEC_UNUSED_UNUSED_SCOPE_FN)
 				HYBRID_BREAK();
 			HYBRID_CASE(ZEND_CALLABLE_CONVERT_SPEC_UNUSED_UNUSED):
 				VM_TRACE(ZEND_CALLABLE_CONVERT_SPEC_UNUSED_UNUSED)
@@ -118522,6 +119218,7 @@ void zend_vm_init(void)
 		ZEND_INSTANCEOF_SPEC_CV_UNUSED_HANDLER,
 		ZEND_NULL_HANDLER,
 		ZEND_GENERATOR_CREATE_SPEC_HANDLER,
+		ZEND_GENERATOR_CREATE_SPEC_SCOPE_FN_HANDLER,
 		ZEND_NULL_HANDLER,
 		ZEND_NULL_HANDLER,
 		ZEND_MAKE_REF_SPEC_VAR_UNUSED_HANDLER,
@@ -118662,9 +119359,14 @@ void zend_vm_init(void)
 		ZEND_SPACESHIP_SPEC_CV_CV_HANDLER,
 		ZEND_FUNC_NUM_ARGS_SPEC_UNUSED_UNUSED_HANDLER,
 		ZEND_FUNC_GET_ARGS_SPEC_CONST_UNUSED_HANDLER,
+		ZEND_FUNC_GET_ARGS_SPEC_CONST_UNUSED_SCOPE_FN_HANDLER,
+		ZEND_NULL_HANDLER,
+		ZEND_NULL_HANDLER,
 		ZEND_NULL_HANDLER,
 		ZEND_NULL_HANDLER,
 		ZEND_FUNC_GET_ARGS_SPEC_UNUSED_UNUSED_HANDLER,
+		ZEND_FUNC_GET_ARGS_SPEC_UNUSED_UNUSED_SCOPE_FN_HANDLER,
+		ZEND_NULL_HANDLER,
 		ZEND_NULL_HANDLER,
 		ZEND_FETCH_STATIC_PROP_R_SPEC_HANDLER,
 		ZEND_FETCH_STATIC_PROP_W_SPEC_HANDLER,
@@ -122002,6 +122704,7 @@ void zend_vm_init(void)
 		ZEND_INSTANCEOF_SPEC_CV_UNUSED_TAILCALL_HANDLER,
 		ZEND_NULL_TAILCALL_HANDLER,
 		ZEND_GENERATOR_CREATE_SPEC_TAILCALL_HANDLER,
+		ZEND_GENERATOR_CREATE_SPEC_SCOPE_FN_TAILCALL_HANDLER,
 		ZEND_NULL_TAILCALL_HANDLER,
 		ZEND_NULL_TAILCALL_HANDLER,
 		ZEND_MAKE_REF_SPEC_VAR_UNUSED_TAILCALL_HANDLER,
@@ -122142,9 +122845,14 @@ void zend_vm_init(void)
 		ZEND_SPACESHIP_SPEC_CV_CV_TAILCALL_HANDLER,
 		ZEND_FUNC_NUM_ARGS_SPEC_UNUSED_UNUSED_TAILCALL_HANDLER,
 		ZEND_FUNC_GET_ARGS_SPEC_CONST_UNUSED_TAILCALL_HANDLER,
+		ZEND_FUNC_GET_ARGS_SPEC_CONST_UNUSED_SCOPE_FN_TAILCALL_HANDLER,
+		ZEND_NULL_TAILCALL_HANDLER,
+		ZEND_NULL_TAILCALL_HANDLER,
 		ZEND_NULL_TAILCALL_HANDLER,
 		ZEND_NULL_TAILCALL_HANDLER,
 		ZEND_FUNC_GET_ARGS_SPEC_UNUSED_UNUSED_TAILCALL_HANDLER,
+		ZEND_FUNC_GET_ARGS_SPEC_UNUSED_UNUSED_SCOPE_FN_TAILCALL_HANDLER,
+		ZEND_NULL_TAILCALL_HANDLER,
 		ZEND_NULL_TAILCALL_HANDLER,
 		ZEND_FETCH_STATIC_PROP_R_SPEC_TAILCALL_HANDLER,
 		ZEND_FETCH_STATIC_PROP_W_SPEC_TAILCALL_HANDLER,
@@ -123251,7 +123959,7 @@ void zend_vm_init(void)
 		1255,
 		1256 | SPEC_RULE_OP1,
 		1261 | SPEC_RULE_OP1,
-		3476,
+		3482,
 		1266 | SPEC_RULE_OP1,
 		1271 | SPEC_RULE_OP1,
 		1276 | SPEC_RULE_OP2,
@@ -123285,7 +123993,7 @@ void zend_vm_init(void)
 		1559 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
 		1584 | SPEC_RULE_OP1,
 		1589,
-		3476,
+		3482,
 		1590 | SPEC_RULE_OP1,
 		1595 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
 		1620 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
@@ -123345,123 +124053,123 @@ void zend_vm_init(void)
 		2248 | SPEC_RULE_OP1,
 		2253,
 		2254 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
-		2279,
-		2280 | SPEC_RULE_OP1,
-		2285,
+		2279 | SPEC_RULE_SCOPE_FN,
+		2281 | SPEC_RULE_OP1,
 		2286,
 		2287,
 		2288,
 		2289,
 		2290,
 		2291,
-		2292 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
-		2317,
+		2292,
+		2293 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
 		2318,
 		2319,
-		2320 | SPEC_RULE_OP1,
-		2325,
-		2326 | SPEC_RULE_ISSET,
-		2328 | SPEC_RULE_OP2,
-		2333,
-		2334 | SPEC_RULE_OP1,
-		2339 | SPEC_RULE_OBSERVER,
-		2341,
-		2342 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
-		2367 | SPEC_RULE_OP1 | SPEC_RULE_OBSERVER,
-		2377,
+		2320,
+		2321 | SPEC_RULE_OP1,
+		2326,
+		2327 | SPEC_RULE_ISSET,
+		2329 | SPEC_RULE_OP2,
+		2334,
+		2335 | SPEC_RULE_OP1,
+		2340 | SPEC_RULE_OBSERVER,
+		2342,
+		2343 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
+		2368 | SPEC_RULE_OP1 | SPEC_RULE_OBSERVER,
 		2378,
 		2379,
 		2380,
-		2381 | SPEC_RULE_OP1,
-		2386,
+		2381,
+		2382 | SPEC_RULE_OP1,
 		2387,
-		2388 | SPEC_RULE_OP1,
-		2393 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
-		2418,
-		2419 | SPEC_RULE_OP1,
-		2424,
-		2425,
-		2426,
-		2427,
-		2428,
-		2429,
+		2388,
+		2389 | SPEC_RULE_OP1,
+		2394 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
+		2419,
+		2420 | SPEC_RULE_OP1 | SPEC_RULE_SCOPE_FN,
 		2430,
 		2431,
-		2432 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
-		2457,
-		2458,
-		2459,
-		2460 | SPEC_RULE_OP2,
+		2432,
+		2433,
+		2434,
+		2435,
+		2436,
+		2437,
+		2438 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
+		2463,
+		2464,
 		2465,
-		2466 | SPEC_RULE_OP1,
-		2471 | SPEC_RULE_OP1,
-		2476 | SPEC_RULE_OP1,
-		2481 | SPEC_RULE_OP1,
-		2486 | SPEC_RULE_OP1,
-		2491,
+		2466 | SPEC_RULE_OP2,
+		2471,
+		2472 | SPEC_RULE_OP1,
+		2477 | SPEC_RULE_OP1,
+		2482 | SPEC_RULE_OP1,
+		2487 | SPEC_RULE_OP1,
 		2492 | SPEC_RULE_OP1,
-		2497 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
-		2522 | SPEC_RULE_OP1,
-		2527 | SPEC_RULE_OP2,
-		2532 | SPEC_RULE_OP1,
-		2537 | SPEC_RULE_OP1,
-		2542,
-		2543,
-		2544,
-		2545,
-		2546,
-		2547 | SPEC_RULE_OBSERVER,
-		2549 | SPEC_RULE_OBSERVER,
-		2551 | SPEC_RULE_OBSERVER,
+		2497,
+		2498 | SPEC_RULE_OP1,
+		2503 | SPEC_RULE_OP1 | SPEC_RULE_OP2,
+		2528 | SPEC_RULE_OP1,
+		2533 | SPEC_RULE_OP2,
+		2538 | SPEC_RULE_OP1,
+		2543 | SPEC_RULE_OP1,
+		2548,
+		2549,
+		2550,
+		2551,
+		2552,
 		2553 | SPEC_RULE_OBSERVER,
-		2555,
-		2556,
-		2557,
-		2558,
-		2559,
-		2560,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
-		3476,
+		2555 | SPEC_RULE_OBSERVER,
+		2557 | SPEC_RULE_OBSERVER,
+		2559 | SPEC_RULE_OBSERVER,
+		2561,
+		2562,
+		2563,
+		2564,
+		2565,
+		2566,
+		3482,
+		3482,
+		3482,
+		3482,
+		3482,
+		3482,
+		3482,
+		3482,
+		3482,
+		3482,
+		3482,
+		3482,
+		3482,
+		3482,
+		3482,
+		3482,
+		3482,
+		3482,
+		3482,
+		3482,
+		3482,
+		3482,
+		3482,
+		3482,
+		3482,
+		3482,
+		3482,
+		3482,
+		3482,
+		3482,
+		3482,
+		3482,
+		3482,
+		3482,
+		3482,
+		3482,
+		3482,
+		3482,
+		3482,
+		3482,
+		3482,
+		3482,
 	};
 #if 0
 #elif (ZEND_VM_KIND == ZEND_VM_KIND_HYBRID)
@@ -123571,6 +124279,7 @@ static uint32_t ZEND_FASTCALL zend_vm_get_opcode_handler_idx(uint32_t spec, cons
 	uint32_t offset = 0;
 	if (spec & SPEC_RULE_OP1) offset = offset * 5 + zend_vm_decode[op->op1_type];
 	if (spec & SPEC_RULE_OP2) offset = offset * 5 + zend_vm_decode[op->op2_type];
+	if (spec & SPEC_RULE_SCOPE_FN) offset = offset * 2 + (op->extended_value & 1);
 	if (spec & SPEC_EXTRA_MASK) {
 		if (spec & SPEC_RULE_RETVAL) {
 			offset = offset * 2 + (op->result_type != IS_UNUSED);
@@ -123638,7 +124347,7 @@ ZEND_API void ZEND_FASTCALL zend_vm_set_opcode_handler_ex(zend_op* op, uint32_t 
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 2569 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_COMMUTATIVE;
+				spec = 2575 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_COMMUTATIVE;
 				if (op->op1_type < op->op2_type) {
 					zend_swap_operands(op);
 				}
@@ -123646,7 +124355,7 @@ ZEND_API void ZEND_FASTCALL zend_vm_set_opcode_handler_ex(zend_op* op, uint32_t 
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 2594 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_COMMUTATIVE;
+				spec = 2600 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_COMMUTATIVE;
 				if (op->op1_type < op->op2_type) {
 					zend_swap_operands(op);
 				}
@@ -123654,7 +124363,7 @@ ZEND_API void ZEND_FASTCALL zend_vm_set_opcode_handler_ex(zend_op* op, uint32_t 
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 2619 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_COMMUTATIVE;
+				spec = 2625 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_COMMUTATIVE;
 				if (op->op1_type < op->op2_type) {
 					zend_swap_operands(op);
 				}
@@ -123665,17 +124374,17 @@ ZEND_API void ZEND_FASTCALL zend_vm_set_opcode_handler_ex(zend_op* op, uint32_t 
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 2644 | SPEC_RULE_OP1 | SPEC_RULE_OP2;
+				spec = 2650 | SPEC_RULE_OP1 | SPEC_RULE_OP2;
 			} else if (op1_info == MAY_BE_LONG && op2_info == MAY_BE_LONG) {
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 2669 | SPEC_RULE_OP1 | SPEC_RULE_OP2;
+				spec = 2675 | SPEC_RULE_OP1 | SPEC_RULE_OP2;
 			} else if (op1_info == MAY_BE_DOUBLE && op2_info == MAY_BE_DOUBLE) {
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 2694 | SPEC_RULE_OP1 | SPEC_RULE_OP2;
+				spec = 2700 | SPEC_RULE_OP1 | SPEC_RULE_OP2;
 			}
 			break;
 		case ZEND_MUL:
@@ -123686,17 +124395,17 @@ ZEND_API void ZEND_FASTCALL zend_vm_set_opcode_handler_ex(zend_op* op, uint32_t 
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 2719 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_COMMUTATIVE;
+				spec = 2725 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_COMMUTATIVE;
 			} else if (op1_info == MAY_BE_LONG && op2_info == MAY_BE_LONG) {
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 2744 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_COMMUTATIVE;
+				spec = 2750 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_COMMUTATIVE;
 			} else if (op1_info == MAY_BE_DOUBLE && op2_info == MAY_BE_DOUBLE) {
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 2769 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_COMMUTATIVE;
+				spec = 2775 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_COMMUTATIVE;
 			}
 			break;
 		case ZEND_IS_IDENTICAL:
@@ -123707,16 +124416,16 @@ ZEND_API void ZEND_FASTCALL zend_vm_set_opcode_handler_ex(zend_op* op, uint32_t 
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 2794 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH | SPEC_RULE_COMMUTATIVE;
+				spec = 2800 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH | SPEC_RULE_COMMUTATIVE;
 			} else if (op1_info == MAY_BE_DOUBLE && op2_info == MAY_BE_DOUBLE) {
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 2869 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH | SPEC_RULE_COMMUTATIVE;
+				spec = 2875 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH | SPEC_RULE_COMMUTATIVE;
 			} else if (op->op2_type == IS_CONST && (Z_TYPE_P(RT_CONSTANT(op, op->op2)) == IS_ARRAY && zend_hash_num_elements(Z_ARR_P(RT_CONSTANT(op, op->op2))) == 0)) {
-				spec = 3094 | SPEC_RULE_SMART_BRANCH | SPEC_RULE_COMMUTATIVE;
+				spec = 3100 | SPEC_RULE_SMART_BRANCH | SPEC_RULE_COMMUTATIVE;
 			} else if (op->op1_type == IS_CV && (op->op2_type & (IS_CONST|IS_CV)) && !(op1_info & (MAY_BE_UNDEF|MAY_BE_REF)) && !(op2_info & (MAY_BE_UNDEF|MAY_BE_REF))) {
-				spec = 3100 | SPEC_RULE_OP2 | SPEC_RULE_COMMUTATIVE;
+				spec = 3106 | SPEC_RULE_OP2 | SPEC_RULE_COMMUTATIVE;
 			}
 			break;
 		case ZEND_IS_NOT_IDENTICAL:
@@ -123727,16 +124436,16 @@ ZEND_API void ZEND_FASTCALL zend_vm_set_opcode_handler_ex(zend_op* op, uint32_t 
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 2944 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH | SPEC_RULE_COMMUTATIVE;
+				spec = 2950 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH | SPEC_RULE_COMMUTATIVE;
 			} else if (op1_info == MAY_BE_DOUBLE && op2_info == MAY_BE_DOUBLE) {
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 3019 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH | SPEC_RULE_COMMUTATIVE;
+				spec = 3025 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH | SPEC_RULE_COMMUTATIVE;
 			} else if (op->op2_type == IS_CONST && (Z_TYPE_P(RT_CONSTANT(op, op->op2)) == IS_ARRAY && zend_hash_num_elements(Z_ARR_P(RT_CONSTANT(op, op->op2))) == 0)) {
-				spec = 3097 | SPEC_RULE_SMART_BRANCH | SPEC_RULE_COMMUTATIVE;
+				spec = 3103 | SPEC_RULE_SMART_BRANCH | SPEC_RULE_COMMUTATIVE;
 			} else if (op->op1_type == IS_CV && (op->op2_type & (IS_CONST|IS_CV)) && !(op1_info & (MAY_BE_UNDEF|MAY_BE_REF)) && !(op2_info & (MAY_BE_UNDEF|MAY_BE_REF))) {
-				spec = 3105 | SPEC_RULE_OP2 | SPEC_RULE_COMMUTATIVE;
+				spec = 3111 | SPEC_RULE_OP2 | SPEC_RULE_COMMUTATIVE;
 			}
 			break;
 		case ZEND_IS_EQUAL:
@@ -123747,12 +124456,12 @@ ZEND_API void ZEND_FASTCALL zend_vm_set_opcode_handler_ex(zend_op* op, uint32_t 
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 2794 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH | SPEC_RULE_COMMUTATIVE;
+				spec = 2800 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH | SPEC_RULE_COMMUTATIVE;
 			} else if (op1_info == MAY_BE_DOUBLE && op2_info == MAY_BE_DOUBLE) {
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 2869 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH | SPEC_RULE_COMMUTATIVE;
+				spec = 2875 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH | SPEC_RULE_COMMUTATIVE;
 			}
 			break;
 		case ZEND_IS_NOT_EQUAL:
@@ -123763,12 +124472,12 @@ ZEND_API void ZEND_FASTCALL zend_vm_set_opcode_handler_ex(zend_op* op, uint32_t 
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 2944 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH | SPEC_RULE_COMMUTATIVE;
+				spec = 2950 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH | SPEC_RULE_COMMUTATIVE;
 			} else if (op1_info == MAY_BE_DOUBLE && op2_info == MAY_BE_DOUBLE) {
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 3019 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH | SPEC_RULE_COMMUTATIVE;
+				spec = 3025 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH | SPEC_RULE_COMMUTATIVE;
 			}
 			break;
 		case ZEND_IS_SMALLER:
@@ -123776,12 +124485,12 @@ ZEND_API void ZEND_FASTCALL zend_vm_set_opcode_handler_ex(zend_op* op, uint32_t 
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 3110 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH;
+				spec = 3116 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH;
 			} else if (op1_info == MAY_BE_DOUBLE && op2_info == MAY_BE_DOUBLE) {
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 3185 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH;
+				spec = 3191 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH;
 			}
 			break;
 		case ZEND_IS_SMALLER_OR_EQUAL:
@@ -123789,79 +124498,79 @@ ZEND_API void ZEND_FASTCALL zend_vm_set_opcode_handler_ex(zend_op* op, uint32_t 
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 3260 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH;
+				spec = 3266 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH;
 			} else if (op1_info == MAY_BE_DOUBLE && op2_info == MAY_BE_DOUBLE) {
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 3335 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH;
+				spec = 3341 | SPEC_RULE_OP1 | SPEC_RULE_OP2 | SPEC_RULE_SMART_BRANCH;
 			}
 			break;
 		case ZEND_QM_ASSIGN:
 			if (op1_info == MAY_BE_LONG) {
-				spec = 3422 | SPEC_RULE_OP1;
+				spec = 3428 | SPEC_RULE_OP1;
 			} else if (op1_info == MAY_BE_DOUBLE) {
-				spec = 3427 | SPEC_RULE_OP1;
+				spec = 3433 | SPEC_RULE_OP1;
 			} else if ((op->op1_type == IS_CONST) ? !Z_REFCOUNTED_P(RT_CONSTANT(op, op->op1)) : (!(op1_info & ((MAY_BE_ANY|MAY_BE_UNDEF)-(MAY_BE_NULL|MAY_BE_FALSE|MAY_BE_TRUE|MAY_BE_LONG|MAY_BE_DOUBLE))))) {
-				spec = 3432 | SPEC_RULE_OP1;
+				spec = 3438 | SPEC_RULE_OP1;
 			}
 			break;
 		case ZEND_PRE_INC:
 			if (res_info == MAY_BE_LONG && op1_info == MAY_BE_LONG) {
-				spec = 3410 | SPEC_RULE_RETVAL;
+				spec = 3416 | SPEC_RULE_RETVAL;
 			} else if (op1_info == MAY_BE_LONG) {
-				spec = 3412 | SPEC_RULE_RETVAL;
+				spec = 3418 | SPEC_RULE_RETVAL;
 			}
 			break;
 		case ZEND_PRE_DEC:
 			if (res_info == MAY_BE_LONG && op1_info == MAY_BE_LONG) {
-				spec = 3414 | SPEC_RULE_RETVAL;
+				spec = 3420 | SPEC_RULE_RETVAL;
 			} else if (op1_info == MAY_BE_LONG) {
-				spec = 3416 | SPEC_RULE_RETVAL;
+				spec = 3422 | SPEC_RULE_RETVAL;
 			}
 			break;
 		case ZEND_POST_INC:
 			if (res_info == MAY_BE_LONG && op1_info == MAY_BE_LONG) {
-				spec = 3418;
+				spec = 3424;
 			} else if (op1_info == MAY_BE_LONG) {
-				spec = 3419;
+				spec = 3425;
 			}
 			break;
 		case ZEND_POST_DEC:
 			if (res_info == MAY_BE_LONG && op1_info == MAY_BE_LONG) {
-				spec = 3420;
+				spec = 3426;
 			} else if (op1_info == MAY_BE_LONG) {
-				spec = 3421;
+				spec = 3427;
 			}
 			break;
 		case ZEND_JMP:
 			if (OP_JMP_ADDR(op, op->op1) > op) {
-				spec = 2568;
+				spec = 2574;
 			}
 			break;
 		case ZEND_INIT_FCALL:
 			if (Z_EXTRA_P(RT_CONSTANT(op, op->op2)) != 0) {
-				spec = 2561;
+				spec = 2567;
 			}
 			break;
 		case ZEND_RECV:
 			if (op->op2.num == MAY_BE_ANY) {
-				spec = 2562;
+				spec = 2568;
 			}
 			break;
 		case ZEND_SEND_VAL:
 			if (op->op1_type == IS_CONST && op->op2_type == IS_UNUSED && !Z_REFCOUNTED_P(RT_CONSTANT(op, op->op1))) {
-				spec = 3472;
+				spec = 3478;
 			}
 			break;
 		case ZEND_SEND_VAR_EX:
 			if (op->op2_type == IS_UNUSED && op->op2.num <= MAX_ARG_FLAG_NUM && (op1_info & (MAY_BE_UNDEF|MAY_BE_REF)) == 0) {
-				spec = 3467 | SPEC_RULE_OP1;
+				spec = 3473 | SPEC_RULE_OP1;
 			}
 			break;
 		case ZEND_FE_FETCH_R:
 			if (op->op2_type == IS_CV && (op1_info & (MAY_BE_ANY|MAY_BE_REF)) == MAY_BE_ARRAY) {
-				spec = 3474 | SPEC_RULE_RETVAL;
+				spec = 3480 | SPEC_RULE_RETVAL;
 			}
 			break;
 		case ZEND_FETCH_DIM_R:
@@ -123869,22 +124578,22 @@ ZEND_API void ZEND_FASTCALL zend_vm_set_opcode_handler_ex(zend_op* op, uint32_t 
 				if (op->op1_type == IS_CONST && op->op2_type == IS_CONST) {
 					break;
 				}
-				spec = 3437 | SPEC_RULE_OP1 | SPEC_RULE_OP2;
+				spec = 3443 | SPEC_RULE_OP1 | SPEC_RULE_OP2;
 			}
 			break;
 		case ZEND_SEND_VAL_EX:
 			if (op->op2_type == IS_UNUSED && op->op2.num <= MAX_ARG_FLAG_NUM && op->op1_type == IS_CONST && !Z_REFCOUNTED_P(RT_CONSTANT(op, op->op1))) {
-				spec = 3473;
+				spec = 3479;
 			}
 			break;
 		case ZEND_SEND_VAR:
 			if (op->op2_type == IS_UNUSED && (op1_info & (MAY_BE_UNDEF|MAY_BE_REF)) == 0) {
-				spec = 3462 | SPEC_RULE_OP1;
+				spec = 3468 | SPEC_RULE_OP1;
 			}
 			break;
 		case ZEND_COUNT:
 			if ((op1_info & (MAY_BE_ANY|MAY_BE_UNDEF|MAY_BE_REF)) == MAY_BE_ARRAY) {
-				spec = 2563 | SPEC_RULE_OP1;
+				spec = 2569 | SPEC_RULE_OP1;
 			}
 			break;
 		case ZEND_BW_OR:

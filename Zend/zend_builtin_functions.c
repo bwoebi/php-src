@@ -293,8 +293,7 @@ ZEND_FUNCTION(func_get_arg)
 		/* scope-fn declared params live in parent CVs via the literal
 		 * mapping; not directly in ex's arg slots, so the regular path
 		 * below cannot reach them. */
-		uint32_t first_literal = zend_scope_fn_first_literal(&ex->func->op_array);
-		arg = zend_scope_fn_get_arg_zval(ex, requested_offset, first_literal);
+		arg = zend_scope_fn_get_arg_zval(ex, requested_offset);
 		if (arg && EXPECTED(!Z_ISUNDEF_P(arg))) {
 			RETURN_COPY_DEREF(arg);
 		}
@@ -339,12 +338,11 @@ ZEND_FUNCTION(func_get_args)
 		 * mapping; extras live at the original call frame's tail. The
 		 * single accessor handles both arms — cannot share the regular
 		 * `first_extra_arg` boundary loop below. */
-		uint32_t first_literal = zend_scope_fn_first_literal(&ex->func->op_array);
 		array_init_size(return_value, arg_count);
 		zend_hash_real_init_packed(Z_ARRVAL_P(return_value));
 		ZEND_HASH_FILL_PACKED(Z_ARRVAL_P(return_value)) {
 			for (i = 0; i < arg_count; i++) {
-				q = zend_scope_fn_get_arg_zval(ex, i, first_literal);
+				q = zend_scope_fn_get_arg_zval(ex, i);
 				if (q && EXPECTED(!Z_ISUNDEF_P(q))) {
 					ZVAL_DEREF(q);
 					Z_TRY_ADDREF_P(q);
@@ -1755,12 +1753,11 @@ static void debug_backtrace_get_args(zend_execute_data *call, zval *arg_array) /
 		 * from parent CVs via the literal mapping, extras from the
 		 * original call frame. */
 		if (UNEXPECTED(call->func->type == ZEND_USER_FUNCTION && zend_is_scope_ed(call))) {
-			uint32_t first_literal = zend_scope_fn_first_literal(&call->func->op_array);
 			array_init_size(arg_array, num_args);
 			zend_hash_real_init_packed(Z_ARRVAL_P(arg_array));
 			ZEND_HASH_FILL_PACKED(Z_ARRVAL_P(arg_array)) {
 				for (i = 0; i < num_args; i++) {
-					zval *q = zend_scope_fn_get_arg_zval(call, i, first_literal);
+					zval *q = zend_scope_fn_get_arg_zval(call, i);
 					zval original_arg;
 					if (q && EXPECTED(Z_TYPE_INFO_P(q) != IS_UNDEF)) {
 						ZVAL_DEREF(q);

@@ -34,10 +34,10 @@ static void scope_fn_visit_parent_cvs(zend_op_array *scope_op, zend_bitset used_
 		zend_op *opline = &scope_op->opcodes[i];
 		if (opline->opcode == ZEND_ENTER_SCOPE_FUNC) {
 			in_body = true;
-			uint32_t first_literal = opline->op2.num;
+			/* Mapping is pinned at literals[0..num_params). */
 			uint32_t num_params = opline->op1.num;
 			for (uint32_t j = 0; j < num_params; j++) {
-				zval *zv = &scope_op->literals[first_literal + j];
+				zval *zv = &scope_op->literals[j];
 				uint32_t off = (uint32_t)Z_LVAL_P(zv);
 				if (vars_map) ZVAL_LONG(zv, NUM_VAR(vars_map[VAR_NUM(off)]));
 				else zend_bitset_incl(used_vars, VAR_NUM(off));

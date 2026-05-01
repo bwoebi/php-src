@@ -4680,7 +4680,13 @@ static zend_result zend_compile_func_num_args(znode *result, const zend_ast_list
 static zend_result zend_compile_func_get_args(znode *result, const zend_ast_list *args) /* {{{ */
 {
 	if (CG(active_op_array)->function_name && args->children == 0) {
-		zend_emit_op_tmp(result, ZEND_FUNC_GET_ARGS, NULL, NULL);
+		zend_op *opline = zend_emit_op_tmp(result, ZEND_FUNC_GET_ARGS, NULL, NULL);
+		/* SPEC(SCOPE_FN) selects the scope-fn variant from extended_value
+		 * bit 0; the scope-fn variant reads declared params from parent CVs
+		 * and extras from the original call frame instead of ex's args. */
+		if (CG(active_op_array)->fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
+			opline->extended_value = 1;
+		}
 		return SUCCESS;
 	} else {
 		return FAILURE;
@@ -4727,7 +4733,10 @@ static zend_result zend_compile_func_array_slice(znode *result, const zend_ast_l
 		 && Z_LVAL_P(zv) >= 0) {
 			first.op_type = IS_CONST;
 			ZVAL_LONG(&first.u.constant, Z_LVAL_P(zv));
-			zend_emit_op_tmp(result, ZEND_FUNC_GET_ARGS, &first, NULL);
+			zend_op *opline = zend_emit_op_tmp(result, ZEND_FUNC_GET_ARGS, &first, NULL);
+			if (CG(active_op_array)->fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
+				opline->extended_value = 1;
+			}
 			zend_string_release_ex(name, 0);
 			return SUCCESS;
 		}
@@ -8983,6 +8992,19 @@ static zend_op_array *zend_compile_func_decl_ex(
 	CG(context).active_property_info_name = property_info_name;
 	CG(context).active_property_hook_kind = hook_kind;
 
+	/* Reserve the parameter→parent-CV mapping at literals[0..N) for scope
+	 * functions. Filled in below once parent-CV resolution is available
+	 * (post compile_params). Reserving now means everything compile_params
+	 * appends lands at indices >= N automatically — no remap needed. */
+	if (is_scope_fn) {
+		zend_ast_list *params_list = zend_ast_get_list(params_ast);
+		for (uint32_t i = 0; i < params_list->children; i++) {
+			zval zv;
+			ZVAL_LONG(&zv, 0);
+			zend_add_literal(&zv);
+		}
+	}
+
 	if (decl->child[4]) {
 		int target = ZEND_ATTRIBUTE_TARGET_FUNCTION;
 
@@ -9059,10 +9081,14 @@ static zend_op_array *zend_compile_func_decl_ex(
 			toplevel_parent = CG(context).prev->scope_func_parent_op_array;
 		}
 		uint32_t num_params = op_array->last_var;
+		/* AST count must match — we pre-reserved literal slots [0, num_params)
+		 * up front based on the AST. */
+		ZEND_ASSERT(num_params == zend_ast_get_list(params_ast)->children);
 
 		zend_op *enter_opline = zend_emit_op(NULL, ZEND_ENTER_SCOPE_FUNC, NULL, NULL);
 		enter_opline->op1.num = num_params;
-		enter_opline->op2.num = CG(active_op_array)->last_literal;
+		/* Mapping is pinned at literals[0..num_params); the runtime indexes
+		 * directly without consulting op2.num. */
 		for (uint32_t i = 0; i < num_params; i++) {
 			zend_op_array *parent = toplevel_parent;
 			zend_ulong hash_value = zend_string_hash_val(op_array->vars[i]);
@@ -9080,9 +9106,7 @@ static zend_op_array *zend_compile_func_decl_ex(
 				parent->vars[idx] = zend_string_copy(op_array->vars[i]);
 				parent_cv = EX_NUM_TO_VAR(idx);
 			}
-			zval zv;
-			ZVAL_LONG(&zv, parent_cv);
-			zend_add_literal(&zv);
+			ZVAL_LONG(&op_array->literals[i], parent_cv);
 		}
 
 		/* Enable shared CV lookup for the body compilation.

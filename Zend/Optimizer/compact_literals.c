@@ -249,16 +249,14 @@ void zend_optimizer_compact_literals(zend_op_array *op_array, zend_optimizer_ctx
 					}
 					break;
 				case ZEND_ENTER_SCOPE_FUNC: {
-					/* op2.num pins a contiguous run of op1.num IS_LONG
-					 * literals (parameter→parent-CV offsets) that
-					 * zend_scope_fn_get_arg_zval indexes by
-					 * `first_literal + i` at runtime. They must (a) not
-					 * dedupe with anything else and (b) stay contiguous,
+					/* The parameter→parent-CV mapping IS_LONG literals are
+					 * pinned at indices [0, num_params) by compile-time
+					 * pre-reservation. They must (a) not dedupe with
+					 * anything else and (b) stay at literal index 0..N-1,
 					 * preserving order. */
 					uint32_t num_params = opline->op1.num;
-					uint32_t first = opline->op2.num;
 					for (uint32_t k = 0; k < num_params; k++) {
-						LITERAL_INFO_PIN(first + k);
+						LITERAL_INFO_PIN(k);
 					}
 					break;
 				}
@@ -490,13 +488,6 @@ void zend_optimizer_compact_literals(zend_op_array *op_array, zend_optimizer_ctx
 			}
 			if (opline->op2_type == IS_CONST) {
 				opline->op2.constant = map[opline->op2.constant];
-			}
-			/* ENTER_SCOPE_FUNC stores its parameter-mapping start index in
-			 * op2.num (raw, not IS_CONST). Remap it through the same map[]
-			 * used for IS_CONST operands. The pinned literals it points
-			 * to stayed contiguous and in order. */
-			if (opline->opcode == ZEND_ENTER_SCOPE_FUNC) {
-				opline->op2.num = map[opline->op2.num];
 			}
 			switch (opline->opcode) {
 				case ZEND_ASSIGN_STATIC_PROP_OP:

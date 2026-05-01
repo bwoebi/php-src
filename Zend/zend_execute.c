@@ -4991,7 +4991,12 @@ ZEND_API void zend_cleanup_unfinished_execution(zend_execute_data *execute_data,
 	cleanup_live_vars(execute_data, op_num, catch_op_num);
 }
 
-ZEND_API void zend_vm_stack_free_tracked_temporaries_ex(zend_execute_data *call)
+/* Walk the parent's tracked-temps array of scope-fn closures at parent
+ * cleanup. For each closure: force-unwind any pinned fiber/generator (so
+ * finally blocks in the body run with parent CVs still alive), release the
+ * closure object, and throw an Error if it had escaped beyond its declaring
+ * scope. */
+ZEND_API void zend_release_scope_fn_closures_ex(zend_execute_data *call)
 {
 	const zend_op_array *op_array = &call->func->op_array;
 	zval *base = ZEND_CALL_VAR_NUM(call, op_array->last_var + op_array->T - 1);
