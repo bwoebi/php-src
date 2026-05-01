@@ -160,10 +160,9 @@ ZEND_API void zend_generator_close(zend_generator *generator, bool finished_exec
 			if (UNEXPECTED(EG(active_fiber) != NULL
 			            && EG(active_fiber)->forced_unwind_target == execute_data)) {
 				unwind_fiber = EG(active_fiber);
-				ZEND_ASSERT(unwind_fiber->deferred_exception != NULL);
+				ZEND_ASSERT(unwind_fiber->flags & ZEND_FIBER_FLAG_DESTROYED);
 				unwind_fiber->forced_unwind_target = NULL;
-				OBJ_RELEASE(unwind_fiber->deferred_exception);
-				unwind_fiber->deferred_exception = NULL;
+				unwind_fiber->flags &= ~ZEND_FIBER_FLAG_DESTROYED;
 
 				/* Absorb the in-flight sentinel before building the visible
 				 * Error and suspending. */
@@ -195,6 +194,10 @@ ZEND_API void zend_generator_close(zend_generator *generator, bool finished_exec
 		if (EX_CALL_INFO() & ZEND_CALL_HAS_SYMBOL_TABLE) {
 			zend_clean_and_cache_symbol_table(execute_data->symbol_table);
 		}
+		/* Phase A: force-unwind any tracked scope-fn closure with an
+		 * attached Fiber/Generator before the generator's own CVs are
+		 * freed below — so the body sees parent CVs alive. */
+		zend_vm_stack_force_unwind_scope_fn_closures(execute_data);
 		/* always free the CV's, in the symtable are only not-free'd IS_INDIRECT's */
 		zend_free_compiled_variables(execute_data);
 		if (EX_CALL_INFO() & ZEND_CALL_HAS_EXTRA_NAMED_PARAMS) {
@@ -220,6 +223,7 @@ ZEND_API void zend_generator_close(zend_generator *generator, bool finished_exec
 			zend_generator_cleanup_unfinished_execution(generator, execute_data, 0);
 		}
 
+		/* Phase C: refcount-based escape detection + closure release. */
 		zend_vm_stack_free_tracked_temporaries(EX_CALL_INFO(), execute_data);
 
 		efree(execute_data);

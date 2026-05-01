@@ -3034,6 +3034,14 @@ ZEND_VM_HOT_HELPER(zend_leave_helper, ANY, ANY)
 		ZEND_VM_LEAVE();
 	} else if (EXPECTED((call_info & (ZEND_CALL_CODE|ZEND_CALL_TOP)) == 0)) {
 		EG(current_execute_data) = EX(prev_execute_data);
+
+		/* Phase A: force-unwind any tracked scope-fn closure that has an
+		 * attached Fiber / Generator. Runs BEFORE i_free_compiled_variables
+		 * so the unwind sees the parent's CVs alive — writes to parent CVs
+		 * from the body's finally blocks land in still-valid slots and are
+		 * cleaned up by i_free_compiled_variables below. */
+		zend_vm_stack_force_unwind_scope_fn_closures(execute_data);
+
 		i_free_compiled_variables(execute_data);
 
 #ifdef ZEND_PREFER_RELOAD
@@ -3047,8 +3055,9 @@ ZEND_VM_HOT_HELPER(zend_leave_helper, ANY, ANY)
 			zend_free_extra_named_params(EX(extra_named_params));
 		}
 
-		/* Free extra args / tracked temporaries before releasing the closure,
-		 * as that may free the op_array. */
+		/* Phase C: extra args (regular) + tracked-temps refcount-based
+		 * escape detection + closure release. Runs AFTER i_free_compiled_variables
+		 * so refcount > 1 here means truly outlives the parent. */
 		zend_vm_stack_free_extra_args_and_tracked_temporaries(call_info, execute_data);
 
 		if (UNEXPECTED(call_info & ZEND_CALL_RELEASE_THIS)) {
@@ -3097,6 +3106,8 @@ ZEND_VM_HOT_HELPER(zend_leave_helper, ANY, ANY)
 	} else {
 		if (EXPECTED((call_info & ZEND_CALL_CODE) == 0)) {
 			EG(current_execute_data) = EX(prev_execute_data);
+			/* Phase A before i_free; Phase C after — same split as the mid path. */
+			zend_vm_stack_force_unwind_scope_fn_closures(execute_data);
 			i_free_compiled_variables(execute_data);
 #ifdef ZEND_PREFER_RELOAD
 			call_info = EX_CALL_INFO();
@@ -3118,9 +3129,12 @@ ZEND_VM_HOT_HELPER(zend_leave_helper, ANY, ANY)
 			zend_array *symbol_table = EX(symbol_table);
 
 			/* The top-level script frame can hold tracked temporaries when
-			 * the script declared scope-fn closures at file scope; clean
-			 * them up so escaped closures get the parent-exit treatment
-			 * before the symbol table is detached. */
+			 * the script declared scope-fn closures at file scope. Phase A
+			 * (force-unwind any attached Fiber/Generator) runs before the
+			 * symbol table is detached so the script's CVs (held via
+			 * symbol_table indirects) are still reachable. Phase C
+			 * (refcount-based release) runs after. */
+			zend_vm_stack_force_unwind_scope_fn_closures(execute_data);
 			zend_vm_stack_free_tracked_temporaries(call_info, execute_data);
 
 			if (EX(func)->op_array.last_var > 0) {

@@ -458,13 +458,30 @@ static zend_always_inline void zend_vm_stack_free_extra_args(zend_execute_data *
  * Layout: TMP[T-1] = base entry (Z_EXTRA high 24 bits = count),
  *         TMP[T-2..] = entries (Z_EXTRA low 8 bits = mode).
  *
- * Guarded by ZEND_CALL_TRACKED_TEMPORARIES flag (shared with ZEND_CALL_FREE_EXTRA_ARGS)
- * and ZEND_ACC2_HAS_TRACKED_TEMPORARIES in fn_flags2. The fn_flags2 flag is
- * only ever set by pass_two_install on user op_arrays; for internal functions
- * fn_flags2 is unused, so the bit-test alone is sufficient. */
+ * Cleanup is two-phase to handle scope-fn body code (forced unwind) writing
+ * back into parent CVs. Phase A (force-unwind any attached Fiber/Generator)
+ * runs BEFORE i_free_compiled_variables so the parent's CVs are still alive;
+ * Phase C (refcount-based escape detection + closure release) runs AFTER
+ * i_free has dropped parent-CV refs, so refcount > 1 here means truly
+ * outlives the parent.
+ *
+ * Guarded by ZEND_ACC2_HAS_TRACKED_TEMPORARIES in fn_flags2; the flag is
+ * only ever set by pass_two_install on user op_arrays. ZEND_CALL_TRACKED_TEMPORARIES
+ * (shared with ZEND_CALL_FREE_EXTRA_ARGS) gates Phase C from leave_helper. */
 #define ZEND_TRACKED_TMP_SCOPE_FUNC 2
 
+ZEND_API void zend_force_unwind_scope_fn_closures_ex(zend_execute_data *execute_data);
 ZEND_API void zend_release_scope_fn_closures_ex(zend_execute_data *execute_data);
+
+/* Phase A wrapper. Gated only on the fn_flags2 flag — runs unconditionally
+ * for parents that installed scope-fn reservations, regardless of whether
+ * any specific call frame triggered ZEND_CALL_TRACKED_TEMPORARIES. */
+static zend_always_inline void zend_vm_stack_force_unwind_scope_fn_closures(zend_execute_data *execute_data)
+{
+	if (UNEXPECTED(EX(func)->common.fn_flags2 & ZEND_ACC2_HAS_TRACKED_TEMPORARIES)) {
+		zend_force_unwind_scope_fn_closures_ex(execute_data);
+	}
+}
 
 static zend_always_inline void zend_vm_stack_free_tracked_temporaries(uint32_t call_info, zend_execute_data *execute_data)
 {

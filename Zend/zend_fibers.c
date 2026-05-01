@@ -782,24 +782,10 @@ ZEND_API void zend_fiber_synthetic_suspend(zend_fiber *fiber, zend_execute_data 
 	}
 }
 
-/* If a parent function is being torn down with this fiber holding a
- * cross-stack scope_ed in its chain, refuse to suspend and re-throw the
- * deferred exception so the unwind keeps moving toward the scope_ed
- * boundary. Returns true iff the suspend should be aborted. */
-static bool zend_fiber_block_suspend_for_forced_unwind(zend_fiber *fiber)
-{
-	if (UNEXPECTED(fiber->forced_unwind_target != NULL)) {
-		ZEND_ASSERT(fiber->deferred_exception != NULL);
-		GC_ADDREF(fiber->deferred_exception);
-		zend_throw_exception_internal(fiber->deferred_exception);
-		return true;
-	}
-	return false;
-}
-
 ZEND_API void zend_fiber_suspend(zend_fiber *fiber, zval *value, zval *return_value)
 {
-	if (zend_fiber_block_suspend_for_forced_unwind(fiber)) {
+	if (UNEXPECTED(fiber->flags & ZEND_FIBER_FLAG_DESTROYED)) {
+		zend_throw_error(zend_ce_fiber_error, "Cannot suspend in a force-closed fiber");
 		if (return_value) {
 			ZVAL_NULL(return_value);
 		}
@@ -1003,10 +989,6 @@ ZEND_METHOD(Fiber, suspend)
 
 	if (UNEXPECTED(zend_fiber_switch_blocked())) {
 		zend_throw_error(zend_ce_fiber_error, "Cannot switch fibers in current execution context");
-		RETURN_THROWS();
-	}
-
-	if (zend_fiber_block_suspend_for_forced_unwind(fiber)) {
 		RETURN_THROWS();
 	}
 
