@@ -194,10 +194,7 @@ ZEND_API void zend_generator_close(zend_generator *generator, bool finished_exec
 		if (EX_CALL_INFO() & ZEND_CALL_HAS_SYMBOL_TABLE) {
 			zend_clean_and_cache_symbol_table(execute_data->symbol_table);
 		}
-		/* Phase A: force-unwind any tracked scope-fn closure with an
-		 * attached Fiber/Generator before the generator's own CVs are
-		 * freed below — so the body sees parent CVs alive. */
-		zend_vm_stack_force_unwind_scope_fn_closures(execute_data);
+		zend_vm_stack_force_unwind_scope_fn_closures(EX_CALL_INFO(), execute_data);
 		/* always free the CV's, in the symtable are only not-free'd IS_INDIRECT's */
 		zend_free_compiled_variables(execute_data);
 		if (EX_CALL_INFO() & ZEND_CALL_HAS_EXTRA_NAMED_PARAMS) {

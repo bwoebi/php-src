@@ -4377,6 +4377,14 @@ ZEND_API ZEND_COLD void ZEND_FASTCALL zend_fcall_interrupt(zend_execute_data *ca
  * on the zend_execute_data, and when the executor leaves the function, the
  * args will be freed in zend_leave_helper.
  */
+static zend_always_inline void mark_tracked_tmp_base_valid(
+	zend_execute_data *execute_data, const zend_op_array *op_array)
+{
+	if (UNEXPECTED(op_array->fn_flags2 & ZEND_ACC2_HAS_TRACKED_TEMPORARIES)) {
+		Z_EXTRA_P(ZEND_CALL_VAR_NUM(execute_data, op_array->last_var + op_array->T - 1)) = 0;
+	}
+}
+
 static zend_never_inline void zend_copy_extra_args(EXECUTE_DATA_D)
 {
 	const zend_op_array *op_array = &EX(func)->op_array;
@@ -4411,17 +4419,13 @@ static zend_never_inline void zend_copy_extra_args(EXECUTE_DATA_D)
 		} while (--count);
 		if (Z_TYPE_INFO_REFCOUNTED(type_flags)) {
 			ZEND_ADD_CALL_FLAG(execute_data, ZEND_CALL_FREE_EXTRA_ARGS);
-			if (UNEXPECTED(op_array->fn_flags2 & ZEND_ACC2_HAS_TRACKED_TEMPORARIES)) {
-				Z_EXTRA_P(ZEND_CALL_VAR_NUM(execute_data, op_array->last_var + op_array->T - 1)) = 0;
-			}
+			mark_tracked_tmp_base_valid(execute_data, op_array);
 		}
 	} else {
 		do {
 			if (Z_REFCOUNTED_P(src)) {
 				ZEND_ADD_CALL_FLAG(execute_data, ZEND_CALL_FREE_EXTRA_ARGS);
-				if (UNEXPECTED(op_array->fn_flags2 & ZEND_ACC2_HAS_TRACKED_TEMPORARIES)) {
-					Z_EXTRA_P(ZEND_CALL_VAR_NUM(execute_data, op_array->last_var + op_array->T - 1)) = 0;
-				}
+				mark_tracked_tmp_base_valid(execute_data, op_array);
 				break;
 			}
 			src--;
@@ -4991,19 +4995,12 @@ ZEND_API void zend_cleanup_unfinished_execution(zend_execute_data *execute_data,
 	cleanup_live_vars(execute_data, op_num, catch_op_num);
 }
 
-/* Phase A: walk the parent's tracked-temps array of scope-fn closures and
- * tear down any attached Fiber / Generator (force-unwind via fiber resume,
- * close generator). Runs BEFORE i_free_compiled_variables so the unwound
- * body sees the parent's CVs alive — writes to parent CVs from the body's
- * finally blocks land in still-valid slots and are cleaned up by the
- * subsequent i_free_compiled_variables. Closure refs are NOT released here;
- * Phase C (zend_release_scope_fn_closures_ex) does that after the parent's
- * own CV refs to closures have dropped. */
+/* Phase A: walk tracked-temps; force-unwind any attached Fiber/Generator
+ * before the parent's CVs are freed. See zend_execute.h for ordering. */
 ZEND_API void zend_force_unwind_scope_fn_closures_ex(zend_execute_data *call)
 {
-	const zend_op_array *op_array = &call->func->op_array;
-	zval *base = ZEND_CALL_VAR_NUM(call, op_array->last_var + op_array->T - 1);
-	uint32_t count = Z_EXTRA_P(base) >> 8;
+	uint32_t count;
+	zval *base = zend_tracked_tmp_base(call, &count);
 
 	for (uint32_t i = 0; i < count; i++) {
 		zval *entry = base - i - 1;
@@ -5040,8 +5037,7 @@ ZEND_API void zend_force_unwind_scope_fn_closures_ex(zend_execute_data *call)
 			 * frame whose func belongs to this closure object. */
 			zend_execute_data *target = unwind_fiber->execute_data;
 			while (target != NULL) {
-				if (target->func != NULL
-				 && (target->func->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)
+				if (zend_is_scope_ed(target)
 				 && ZEND_CLOSURE_OBJECT(target->func) == Z_OBJ_P(entry)) {
 					break;
 				}
@@ -5112,9 +5108,8 @@ ZEND_API void zend_force_unwind_scope_fn_closures_ex(zend_execute_data *call)
  * dropped any parent CV refs). */
 ZEND_API void zend_release_scope_fn_closures_ex(zend_execute_data *call)
 {
-	const zend_op_array *op_array = &call->func->op_array;
-	zval *base = ZEND_CALL_VAR_NUM(call, op_array->last_var + op_array->T - 1);
-	uint32_t count = Z_EXTRA_P(base) >> 8;
+	uint32_t count;
+	zval *base = zend_tracked_tmp_base(call, &count);
 
 	for (uint32_t i = 0; i < count; i++) {
 		zval *entry = base - i - 1;

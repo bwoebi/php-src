@@ -3016,13 +3016,8 @@ ZEND_VM_HOT_HELPER(zend_leave_helper, ANY, ANY)
 		ZEND_VM_LEAVE();
 	} else if (UNEXPECTED(call_info & ZEND_CALL_OBSERVED)
 	        && UNEXPECTED(EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)) {
-		/* ZEND_CALL_SCOPE_FN is aliased to ZEND_CALL_OBSERVED — set on a
-		 * scope_ed at ENTER_SCOPE_FUNC. The OBSERVED bit also disables
-		 * ZEND_RETURN's cv-to-result move (otherwise it would null the
-		 * parent CV). The EX(func) deref happens only when the call is
-		 * already disqualified from the fast path, so the common return
-		 * path stays untouched. Pure-observer (non-scope-fn) returns fall
-		 * through to the regular mid/slow paths below. */
+		/* ZEND_CALL_SCOPE_FN aliased to ZEND_CALL_OBSERVED disqualifies the
+		 * fast path AND disables ZEND_RETURN's cv-to-result move. */
 		if (zend_leave_scope_ed(execute_data, call_info)) {
 			ZEND_VM_RETURN();
 		}
@@ -3036,12 +3031,7 @@ ZEND_VM_HOT_HELPER(zend_leave_helper, ANY, ANY)
 	} else if (EXPECTED((call_info & (ZEND_CALL_CODE|ZEND_CALL_TOP)) == 0)) {
 		EG(current_execute_data) = EX(prev_execute_data);
 
-		/* Phase A: force-unwind any tracked scope-fn closure that has an
-		 * attached Fiber / Generator. Runs BEFORE i_free_compiled_variables
-		 * so the unwind sees the parent's CVs alive — writes to parent CVs
-		 * from the body's finally blocks land in still-valid slots and are
-		 * cleaned up by i_free_compiled_variables below. */
-		zend_vm_stack_force_unwind_scope_fn_closures(execute_data);
+		zend_vm_stack_force_unwind_scope_fn_closures(call_info, execute_data);
 
 		i_free_compiled_variables(execute_data);
 
@@ -3056,9 +3046,6 @@ ZEND_VM_HOT_HELPER(zend_leave_helper, ANY, ANY)
 			zend_free_extra_named_params(EX(extra_named_params));
 		}
 
-		/* Phase C: extra args (regular) + tracked-temps refcount-based
-		 * escape detection + closure release. Runs AFTER i_free_compiled_variables
-		 * so refcount > 1 here means truly outlives the parent. */
 		zend_vm_stack_free_extra_args_and_tracked_temporaries(call_info, execute_data);
 
 		if (UNEXPECTED(call_info & ZEND_CALL_RELEASE_THIS)) {
@@ -3107,8 +3094,7 @@ ZEND_VM_HOT_HELPER(zend_leave_helper, ANY, ANY)
 	} else {
 		if (EXPECTED((call_info & ZEND_CALL_CODE) == 0)) {
 			EG(current_execute_data) = EX(prev_execute_data);
-			/* Phase A before i_free; Phase C after — same split as the mid path. */
-			zend_vm_stack_force_unwind_scope_fn_closures(execute_data);
+			zend_vm_stack_force_unwind_scope_fn_closures(call_info, execute_data);
 			i_free_compiled_variables(execute_data);
 #ifdef ZEND_PREFER_RELOAD
 			call_info = EX_CALL_INFO();
@@ -3129,13 +3115,9 @@ ZEND_VM_HOT_HELPER(zend_leave_helper, ANY, ANY)
 		} else /* if (call_kind == ZEND_CALL_TOP_CODE) */ {
 			zend_array *symbol_table = EX(symbol_table);
 
-			/* The top-level script frame can hold tracked temporaries when
-			 * the script declared scope-fn closures at file scope. Phase A
-			 * (force-unwind any attached Fiber/Generator) runs before the
-			 * symbol table is detached so the script's CVs (held via
-			 * symbol_table indirects) are still reachable. Phase C
-			 * (refcount-based release) runs after. */
-			zend_vm_stack_force_unwind_scope_fn_closures(execute_data);
+			/* Top-level script: Phase A before symbol-table detach (CVs live
+			 * via symbol_table indirects); Phase C after. */
+			zend_vm_stack_force_unwind_scope_fn_closures(call_info, execute_data);
 			zend_vm_stack_free_tracked_temporaries(call_info, execute_data);
 
 			if (EX(func)->op_array.last_var > 0) {
@@ -10778,7 +10760,7 @@ ZEND_VM_HANDLER(212, ZEND_DECLARE_SCOPE_FUNC, UNUSED, NUM)
 	/* For nested scope fns, the top-level parent (where shared CVs live) is
 	 * recovered through our own scope_ed's stash; otherwise execute_data is
 	 * already the top-level parent. */
-	zend_execute_data *parent_ex = (EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)
+	zend_execute_data *parent_ex = zend_is_scope_ed(execute_data)
 		? zend_scope_fn_parent_ed(execute_data)
 		: execute_data;
 
@@ -10791,10 +10773,9 @@ ZEND_VM_HANDLER(212, ZEND_DECLARE_SCOPE_FUNC, UNUSED, NUM)
 		Z_TYPE_INFO_P(this_ptr) = IS_PTR;
 	}
 
-	/* Register the closure in the parent's tracked-temporaries array so
-	 * parent-exit can clean up if the closure escaped. On loop re-evaluation,
-	 * replace the existing entry rather than pushing a duplicate.
-	 * Z_EXTRA layout per entry: bits 0-7 = mode, bits 8-23 = func_def index. */
+	/* Register in the parent's tracked-temporaries array (loop re-evaluation
+	 * replaces the existing entry). Z_EXTRA per entry: bits 0-7 = mode,
+	 * bits 8-23 = func_def index. */
 	{
 		const zend_op_array *parent_op = &parent_ex->func->op_array;
 		zval *base = ZEND_CALL_VAR_NUM(parent_ex, parent_op->last_var + parent_op->T - 1);
@@ -10862,17 +10843,11 @@ ZEND_VM_HANDLER(213, ZEND_ENTER_SCOPE_FUNC, ANY, ANY)
 
 	scope_ed = (zend_execute_data *)((char *)parent_ed + scope_ed_offset);
 
-	/* Move passed/default param values from the call frame's positive arg
-	 * slots into the corresponding parent CVs (the literal mapping records
-	 * which CV each param maps to). Done BEFORE the execute_data swap so
-	 * a destructor that throws while running here unwinds via call_frame's
-	 * normal CV layout — scope_ed's CVs use a parent-relative offset
-	 * encoding that is invisible to cleanup_live_vars / i_free_compiled_variables.
-	 *
-	 * Within the loop we stash-then-dtor so an exception mid-loop doesn't
-	 * leave dst holding freed memory. If a destructor throws, we abandon
-	 * the swap and HANDLE_EXCEPTION at the call_frame level — scope_ed
-	 * cleanup would not be able to walk its CVs anyway. */
+	/* Move passed/default args into parent CVs via the literal mapping.
+	 * Per-iteration: stash old, install new, dtor old — keeps dst valid
+	 * across destructor exceptions. Done before swapping execute_data so
+	 * a thrown destructor unwinds via call_frame's CV layout (scope_ed's
+	 * negative offsets are invisible to cleanup_live_vars). */
 	if (num_params > 0) {
 		zval *literals = EX(func)->op_array.literals;
 		for (uint32_t i = 0; i < num_params; i++) {
@@ -10885,9 +10860,6 @@ ZEND_VM_HANDLER(213, ZEND_ENTER_SCOPE_FUNC, ANY, ANY)
 			ZVAL_UNDEF(src);
 			zval_ptr_dtor(&old);
 		}
-		/* If any destructor in the loop above threw, abandon the swap and
-		 * HANDLE_EXCEPTION at the call_frame level — scope_ed cleanup would
-		 * not be able to walk its CVs anyway. */
 		if (UNEXPECTED(EG(exception))) {
 			HANDLE_EXCEPTION();
 		}

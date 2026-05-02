@@ -373,8 +373,8 @@ static zend_always_inline void zend_scope_ed_cleanup(zend_execute_data *scope_ed
  * on call frames of any function, so the bit alone is not specific. */
 static zend_always_inline bool zend_is_scope_ed(const zend_execute_data *ex)
 {
-	return ex->func != NULL
-		&& (ZEND_CALL_INFO(ex) & ZEND_CALL_SCOPE_FN)
+	ZEND_ASSERT(ex->func != NULL);
+	return (ZEND_CALL_INFO(ex) & ZEND_CALL_SCOPE_FN)
 		&& (ex->func->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC);
 }
 
@@ -472,15 +472,22 @@ static zend_always_inline void zend_vm_stack_free_extra_args(zend_execute_data *
  * (shared with ZEND_CALL_FREE_EXTRA_ARGS) gates Phase C from leave_helper. */
 #define ZEND_TRACKED_TMP_SCOPE_FUNC 2
 
+static zend_always_inline zval *zend_tracked_tmp_base(const zend_execute_data *call, uint32_t *count)
+{
+	const zend_op_array *op_array = &call->func->op_array;
+	zval *base = ZEND_CALL_VAR_NUM(call, op_array->last_var + op_array->T - 1);
+	*count = Z_EXTRA_P(base) >> 8;
+	return base;
+}
+
 ZEND_API void zend_force_unwind_scope_fn_closures_ex(zend_execute_data *execute_data);
 ZEND_API void zend_release_scope_fn_closures_ex(zend_execute_data *execute_data);
 
-/* Phase A wrapper. Gated only on the fn_flags2 flag — runs unconditionally
- * for parents that installed scope-fn reservations, regardless of whether
- * any specific call frame triggered ZEND_CALL_TRACKED_TEMPORARIES. */
-static zend_always_inline void zend_vm_stack_force_unwind_scope_fn_closures(zend_execute_data *execute_data)
+/* Phase A wrapper. See zend_vm_stack_free_tracked_temporaries (Phase C) for
+ * the matching gate at the end of leave_helper. */
+static zend_always_inline void zend_vm_stack_force_unwind_scope_fn_closures(uint32_t call_info, zend_execute_data *execute_data)
 {
-	if (UNEXPECTED(EX(func)->common.fn_flags2 & ZEND_ACC2_HAS_TRACKED_TEMPORARIES)) {
+	if (UNEXPECTED((call_info & ZEND_CALL_TRACKED_TEMPORARIES) != 0) && (EX(func)->common.fn_flags2 & ZEND_ACC2_HAS_TRACKED_TEMPORARIES)) {
 		zend_force_unwind_scope_fn_closures_ex(execute_data);
 	}
 }
@@ -499,15 +506,16 @@ static zend_always_inline void zend_vm_stack_free_tracked_temporaries(uint32_t c
 static zend_always_inline void zend_vm_stack_free_extra_args_and_tracked_temporaries(uint32_t call_info, zend_execute_data *call)
 {
 	if (UNEXPECTED(call_info & ZEND_CALL_FREE_EXTRA_ARGS)) {
-		uint32_t count = ZEND_CALL_NUM_ARGS(call) - call->func->op_array.num_args;
+		const zend_op_array *op_array = &call->func->op_array;
+		uint32_t count = ZEND_CALL_NUM_ARGS(call) - op_array->num_args;
 		if (EXPECTED(count > 0)) {
-			zval *p = ZEND_CALL_VAR_NUM(call, call->func->op_array.last_var + call->func->op_array.T);
+			zval *p = ZEND_CALL_VAR_NUM(call, op_array->last_var + op_array->T);
 			do {
 				i_zval_ptr_dtor(p);
 				p++;
 			} while (--count);
 		}
-		if (UNEXPECTED(call->func->common.fn_flags2 & ZEND_ACC2_HAS_TRACKED_TEMPORARIES)) {
+		if (UNEXPECTED(op_array->fn_flags2 & ZEND_ACC2_HAS_TRACKED_TEMPORARIES)) {
 			zend_release_scope_fn_closures_ex(call);
 		}
 	}
