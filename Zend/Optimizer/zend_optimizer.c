@@ -1784,6 +1784,11 @@ ZEND_API void zend_optimize_script(zend_script *script, zend_long optimization_l
 			if (zend_op_array_is_scope_fn(op_array)) {
 				continue; /* Never reverted, so don't redo */
 			}
+			/* Save pre-redo opcode base. zend_redo_pass_two may erealloc
+			 * op_array->opcodes; the caller_init_opline pointers in
+			 * func_info->callee_info captured by zend_analyze_call_graph
+			 * become stale if the allocation moves. We rebase them below. */
+			zend_op *old_opcodes = op_array->opcodes;
 			func_info = ZEND_FUNC_INFO(op_array);
 			if (func_info && func_info->ssa.var_info) {
 				zend_redo_pass_two_ex(op_array, &func_info->ssa);
@@ -1794,6 +1799,19 @@ ZEND_API void zend_optimize_script(zend_script *script, zend_long optimization_l
 				zend_redo_pass_two(op_array);
 				if (op_array->live_range) {
 					zend_recalc_live_ranges(op_array, NULL);
+				}
+			}
+			if (func_info && op_array->opcodes != old_opcodes) {
+				ptrdiff_t delta = op_array->opcodes - old_opcodes;
+				zend_call_info *call = func_info->callee_info;
+				while (call) {
+					if (call->caller_init_opline) {
+						call->caller_init_opline += delta;
+					}
+					if (call->caller_call_opline) {
+						call->caller_call_opline += delta;
+					}
+					call = call->next_callee;
 				}
 			}
 		}
