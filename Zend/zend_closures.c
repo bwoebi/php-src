@@ -34,8 +34,8 @@ typedef struct _zend_closure {
 	zend_class_entry *called_scope;
 	zif_handler       orig_internal_handler;
 	/* For scope-fn closures only: the object whose lifetime is bound to the
-	 * scope_ed currently active in this closure. Either:
-	 *   - a Fiber (set at ZEND_ENTER_SCOPE_FUNC when the scope_ed is on a
+	 * scope_ex currently active in this closure. Either:
+	 *   - a Fiber (set at ZEND_ENTER_SCOPE_FUNC when the scope_ex is on a
 	 *     different vm_stack than EG(active_fiber)), or
 	 *   - a Generator (set when ZEND_ENTER_SCOPE_FUNC enters a scope fn
 	 *     marked ZEND_ACC_GENERATOR).

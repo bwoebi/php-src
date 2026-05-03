@@ -41,7 +41,7 @@ try {
     echo "outer: ", $e->getMessage(), "\n";
 }
 
-/* Pollute the vm_stack region that held outer's frame (and scope_ed): if
+/* Pollute the vm_stack region that held outer's frame (and scope_ex): if
  * the generator's force-destruct or the fiber's saved state retained a
  * stale pointer into outer's frame, the next access lands in overwritten
  * memory. */

@@ -139,16 +139,16 @@ ZEND_API void zend_generator_close(zend_generator *generator, bool finished_exec
 		 * already cleaning up execute_data. */
 		generator->execute_data = NULL;
 
-		/* Scope-fn generator: scope_ed lives in parent's frame. The standard
+		/* Scope-fn generator: scope_ex lives in parent's frame. The standard
 		 * close path doesn't apply — parent owns CVs and tracked temps, and
 		 * the frame is not heap-allocated. Run only the unfinished-call
-		 * cleanup and the shared scope_ed teardown. */
-		if (UNEXPECTED(zend_is_scope_ed(execute_data))) {
+		 * cleanup and the shared scope_ex teardown. */
+		if (UNEXPECTED(zend_is_scope_ex(execute_data))) {
 			if (UNEXPECTED(!finished_execution) && !CG(unclean_shutdown)) {
 				zend_generator_cleanup_unfinished_execution(generator, execute_data, 0);
 			}
-			/* The gen body's frame IS scope_ed. When a fiber is being
-			 * force-unwound through this scope_ed and the gen body
+			/* The gen body's frame IS scope_ex. When a fiber is being
+			 * force-unwound through this scope_ex and the gen body
 			 * terminates via this close path (not zend_leave_helper),
 			 * leave_helper's boundary handler never runs — clear the
 			 * fiber's unwind state here, build the visible escape Error
@@ -173,7 +173,7 @@ ZEND_API void zend_generator_close(zend_generator *generator, bool finished_exec
 
 				/* Build the Error with stacktrace from inside the gen body
 				 * by temporarily restoring EG(current_execute_data) to the
-				 * gen body frame (scope_ed) before object construction. */
+				 * gen body frame (scope_ex) before object construction. */
 				ZEND_ASSERT(unwind_fiber->pending_resume_throw == NULL);
 				zend_execute_data *saved_ced = EG(current_execute_data);
 				EG(current_execute_data) = execute_data;
@@ -181,7 +181,7 @@ ZEND_API void zend_generator_close(zend_generator *generator, bool finished_exec
 					"Scope function closure must not outlive the declaring scope");
 				EG(current_execute_data) = saved_ced;
 			}
-			zend_scope_ed_cleanup(execute_data);
+			zend_scope_ex_cleanup(execute_data);
 			if (UNEXPECTED(unwind_fiber != NULL)) {
 				/* current_execute_data here is the fiber body frame above
 				 * the (now-closed) generator: that's where the throw

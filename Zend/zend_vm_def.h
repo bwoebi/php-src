@@ -3014,11 +3014,11 @@ ZEND_VM_HOT_HELPER(zend_leave_helper, ANY, ANY)
 
 		LOAD_NEXT_OPLINE();
 		ZEND_VM_LEAVE();
-	} else if (UNEXPECTED(call_info & ZEND_CALL_OBSERVED)
+	} else if (UNEXPECTED(call_info & ZEND_CALL_SCOPE_FN)
 	        && UNEXPECTED(EX(func)->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC)) {
 		/* ZEND_CALL_SCOPE_FN aliased to ZEND_CALL_OBSERVED disqualifies the
 		 * fast path AND disables ZEND_RETURN's cv-to-result move. */
-		if (zend_leave_scope_ed(execute_data, call_info)) {
+		if (zend_leave_scope_ex(execute_data, call_info)) {
 			ZEND_VM_RETURN();
 		}
 		execute_data = EG(current_execute_data);
@@ -4714,14 +4714,14 @@ ZEND_VM_HANDLER(139, ZEND_GENERATOR_CREATE, ANY, ANY, SPEC(SCOPE_FN))
 		SAVE_OPLINE();
 
 		/* SPEC(SCOPE_FN) selects the variant via opline->extended_value bit 0.
-		 * Scope-fn variant: EX is the scope_ed, which lives inside the parent
+		 * Scope-fn variant: EX is the scope_ex, which lives inside the parent
 		 * function's frame. We must NOT memcpy/emalloc — the body's CV
 		 * accesses use negative offsets that only work when the frame stays
-		 * in place. The scope_ed itself IS the generator's execute_data. The
+		 * in place. The scope_ex itself IS the generator's execute_data. The
 		 * generator is attached to the closure so parent-exit cleanup can
 		 * force-destruct it. */
 		bool is_scope_fn = ZEND_VM_IS_SCOPE_FN;
-		ZEND_ASSERT(!is_scope_fn || zend_is_scope_ed(execute_data));
+		ZEND_ASSERT(!is_scope_fn || zend_is_scope_ex(execute_data));
 
 		/* Capture EX(This)'s original call_info before we OR in TOP_FUNCTION |
 		 * GENERATOR. The scope-fn leave path checks ZEND_CALL_TOP against the
@@ -4774,7 +4774,7 @@ ZEND_VM_HANDLER(139, ZEND_GENERATOR_CREATE, ANY, ANY, SPEC(SCOPE_FN))
 				ZEND_ADD_CALL_FLAG_EX(call_info, ZEND_CALL_RELEASE_THIS);
 				Z_ADDREF(gen_execute_data->This);
 			}
-			/* scope_ed lives in parent's TMP, not heap-allocated. */
+			/* scope_ex lives in parent's TMP, not heap-allocated. */
 			ZEND_ADD_CALL_FLAG_EX(call_info, ZEND_CALL_ALLOCATED);
 			/* scope-fn keeps prev_execute_data — body CV access traverses it. */
 			gen_execute_data->prev_execute_data = NULL;
@@ -4792,14 +4792,14 @@ ZEND_VM_HANDLER(139, ZEND_GENERATOR_CREATE, ANY, ANY, SPEC(SCOPE_FN))
 			ZEND_ASSERT(*attached_object_ptr == NULL);
 			*attached_object_ptr = &generator->std;
 
-			uintptr_t enp_tag = (uintptr_t)execute_data->extra_named_params;
+			uintptr_t named_params_tag = (uintptr_t)execute_data->extra_named_params;
 			zend_execute_data *original_call_frame =
-				(zend_execute_data *)(enp_tag & ~(uintptr_t)ZEND_SCOPE_ED_ENP_TAG_MASK);
-			execute_data->extra_named_params = (zend_array *)(enp_tag | ZEND_SCOPE_ED_ENP_TAG_OBJECT_ATTACHED);
+				(zend_execute_data *)(named_params_tag & ~(uintptr_t)ZEND_SCOPE_EX_EXTRA_NAMED_PARAMS_TAG_MASK);
+			execute_data->extra_named_params = (zend_array *)(named_params_tag | ZEND_SCOPE_EX_EXTRA_NAMED_PARAMS_TAG_OBJECT_ATTACHED);
 
 			EG(current_execute_data) = EX(prev_execute_data);
 			execute_data = EX(prev_execute_data);
-			zend_scope_ed_pop_original_call_frame(original_call_frame);
+			zend_scope_ex_pop_original_call_frame(original_call_frame);
 			if (UNEXPECTED(orig_call_info & ZEND_CALL_TOP)) {
 				ZEND_VM_RETURN();
 			}
@@ -10758,10 +10758,10 @@ ZEND_VM_HANDLER(212, ZEND_DECLARE_SCOPE_FUNC, UNUSED, NUM)
 		EX(func)->op_array.scope, called_scope, object);
 
 	/* For nested scope fns, the top-level parent (where shared CVs live) is
-	 * recovered through our own scope_ed's stash; otherwise execute_data is
+	 * recovered through our own scope_ex's stash; otherwise execute_data is
 	 * already the top-level parent. */
-	zend_execute_data *parent_ex = zend_is_scope_ed(execute_data)
-		? zend_scope_fn_parent_ed(execute_data)
+	zend_execute_data *parent_ex = zend_is_scope_ex(execute_data)
+		? zend_scope_fn_parent_ex(execute_data)
 		: execute_data;
 
 	/* The closure's this_ptr stashes the parent execute_data and a
@@ -10822,16 +10822,16 @@ ZEND_VM_HANDLER(213, ZEND_ENTER_SCOPE_FUNC, ANY, ANY)
 	USE_OPLINE
 	zend_object *closure_obj = ZEND_CLOSURE_OBJECT(EX(func));
 	zval *this_ptr = zend_closure_get_this_ptr_ptr(closure_obj);
-	zend_execute_data *parent_ed;
-	zend_execute_data *scope_ed;
+	zend_execute_data *parent_ex;
+	zend_execute_data *scope_ex;
 	zend_execute_data *call_frame = execute_data;
 	uint32_t num_params = opline->op1.num;
-	uint32_t scope_ed_offset = opline->extended_value;
+	uint32_t scope_ex_offset = opline->extended_value;
 
 	SAVE_OPLINE();
 
-	parent_ed = (zend_execute_data *)Z_PTR_P(this_ptr);
-	if (UNEXPECTED(!parent_ed)) {
+	parent_ex = (zend_execute_data *)Z_PTR_P(this_ptr);
+	if (UNEXPECTED(!parent_ex)) {
 		zend_throw_error(NULL, "Cannot call scope function: defining scope has exited");
 		HANDLE_EXCEPTION();
 	}
@@ -10841,19 +10841,19 @@ ZEND_VM_HANDLER(213, ZEND_ENTER_SCOPE_FUNC, ANY, ANY)
 		HANDLE_EXCEPTION();
 	}
 
-	scope_ed = (zend_execute_data *)((char *)parent_ed + scope_ed_offset);
+	scope_ex = (zend_execute_data *)((char *)parent_ex + scope_ex_offset);
 
 	/* Move passed/default args into parent CVs via the literal mapping.
 	 * Per-iteration: stash old, install new, dtor old — keeps dst valid
 	 * across destructor exceptions. Done before swapping execute_data so
-	 * a thrown destructor unwinds via call_frame's CV layout (scope_ed's
+	 * a thrown destructor unwinds via call_frame's CV layout (scope_ex's
 	 * negative offsets are invisible to cleanup_live_vars). */
 	if (num_params > 0) {
 		zval *literals = EX(func)->op_array.literals;
 		for (uint32_t i = 0; i < num_params; i++) {
 			zval *src = ZEND_CALL_ARG(call_frame, i + 1);
 			uint32_t parent_cv_offset = (uint32_t)Z_LVAL(literals[i]);
-			zval *dst = ZEND_CALL_VAR(parent_ed, parent_cv_offset);
+			zval *dst = ZEND_CALL_VAR(parent_ex, parent_cv_offset);
 			zval old;
 			ZVAL_COPY_VALUE(&old, dst);
 			ZVAL_COPY_VALUE(dst, src);
@@ -10865,58 +10865,58 @@ ZEND_VM_HANDLER(213, ZEND_ENTER_SCOPE_FUNC, ANY, ANY)
 		}
 	}
 
-	scope_ed->opline = opline + 1;
-	scope_ed->call = NULL;
-	scope_ed->return_value = EX(return_value);
-	scope_ed->func = EX(func);
-	scope_ed->prev_execute_data = EX(prev_execute_data); /* caller, not parent */
-	scope_ed->symbol_table = parent_ed->symbol_table;
-	scope_ed->run_time_cache = EX(run_time_cache);
-	/* extra_named_params is unused on scope_ed, so we repurpose it to stash
+	scope_ex->opline = opline + 1;
+	scope_ex->call = NULL;
+	scope_ex->return_value = EX(return_value);
+	scope_ex->func = EX(func);
+	scope_ex->prev_execute_data = EX(prev_execute_data); /* caller, not parent */
+	scope_ex->symbol_table = parent_ex->symbol_table;
+	scope_ex->run_time_cache = EX(run_time_cache);
+	/* extra_named_params is unused on scope_ex, so we repurpose it to stash
 	 * the original call frame pointer plus an OBJECT_ATTACHED bit in its
 	 * (zval-aligned) low bits. scope-ed-ness itself is identified by
 	 * ZEND_CALL_SCOPE_FN on call_info, not by a tag bit. */
-	uintptr_t scope_ed_enp_tag = 0;
+	uintptr_t scope_ex_named_params_tag = 0;
 	if (UNEXPECTED(EG(active_fiber) != NULL
 	            && !(EX(func)->op_array.fn_flags & ZEND_ACC_GENERATOR)
-	            && !zend_pointer_in_vm_stack(EG(vm_stack), scope_ed))) {
-		/* scope_ed lives on a different vm_stack than the active fiber's
+	            && !zend_pointer_in_vm_stack(EG(vm_stack), scope_ex))) {
+		/* scope_ex lives on a different vm_stack than the active fiber's
 		 * own — its memory is owned by some calling context that could
 		 * return (and free it) while the fiber is still suspended. Attach
 		 * the fiber so parent-exit cleanup can drive a forced unwind
-		 * through this scope_ed before the parent's frame is freed.
+		 * through this scope_ex before the parent's frame is freed.
 		 * Skipped for generator scope fns: their body runs whenever the
 		 * user advances the generator, not inside the active fiber. */
 		zend_object **attached_object_ptr = zend_closure_get_attached_object_ptr(closure_obj);
 		ZEND_ASSERT(*attached_object_ptr == NULL);
 		*attached_object_ptr = &EG(active_fiber)->std;
-		scope_ed_enp_tag = ZEND_SCOPE_ED_ENP_TAG_OBJECT_ATTACHED;
+		scope_ex_named_params_tag = ZEND_SCOPE_EX_EXTRA_NAMED_PARAMS_TAG_OBJECT_ATTACHED;
 	}
-	scope_ed->extra_named_params = (zend_array *)((uintptr_t)call_frame | scope_ed_enp_tag);
+	scope_ex->extra_named_params = (zend_array *)((uintptr_t)call_frame | scope_ex_named_params_tag);
 
-	ZVAL_COPY_VALUE(&scope_ed->This, &EX(This));
-	ZEND_CALL_NUM_ARGS(scope_ed) = ZEND_CALL_NUM_ARGS(call_frame);
+	ZVAL_COPY_VALUE(&scope_ex->This, &EX(This));
+	ZEND_CALL_NUM_ARGS(scope_ex) = ZEND_CALL_NUM_ARGS(call_frame);
 
-	/* scope_ed's call_info is inherited from call_frame via ZVAL_COPY_VALUE
+	/* scope_ex's call_info is inherited from call_frame via ZVAL_COPY_VALUE
 	 * above. Clear bits that refer to data which lives on call_frame, not
-	 * scope_ed (we never want leave_helper to consult scope_ed's frame for
+	 * scope_ex (we never want leave_helper to consult scope_ex's frame for
 	 * extra args / extra named params / symbol table / page allocation —
 	 * those belong to call_frame). Then set ZEND_CALL_SCOPE_FN so leave_helper
 	 * routes the return through the scope-ed cleanup helper, and ZEND_RETURN's
 	 * cv-to-result move sees ZEND_CALL_OBSERVED and skips the parent CV null. */
-	ZEND_DEL_CALL_FLAG(scope_ed, ZEND_CALL_HAS_EXTRA_NAMED_PARAMS
+	ZEND_DEL_CALL_FLAG(scope_ex, ZEND_CALL_HAS_EXTRA_NAMED_PARAMS
 	                           | ZEND_CALL_FREE_EXTRA_ARGS
 	                           | ZEND_CALL_HAS_SYMBOL_TABLE
 	                           | ZEND_CALL_ALLOCATED);
-	ZEND_ADD_CALL_FLAG(scope_ed, ZEND_CALL_SCOPE_FN);
+	ZEND_ADD_CALL_FLAG(scope_ex, ZEND_CALL_SCOPE_FN);
 
 	Z_EXTRA_P(this_ptr) = 1; /* recursion guard */
 
 	/* Transfer (move) the ZEND_CALL_CLOSURE ref from INIT_DYNAMIC_CALL to
-	 * scope_ed — no extra ADDREF; leave_helper releases it. */
+	 * scope_ex — no extra ADDREF; leave_helper releases it. */
 
-	execute_data = scope_ed;
-	EG(current_execute_data) = scope_ed;
+	execute_data = scope_ex;
+	EG(current_execute_data) = scope_ex;
 
 	LOAD_OPLINE();
 	ZEND_VM_CONTINUE();

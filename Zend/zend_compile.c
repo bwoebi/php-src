@@ -8761,16 +8761,16 @@ static zend_string *zend_begin_func_decl(znode *result, zend_op_array *op_array,
 
 /* Apply +/- offsets to a scope-fn body's operands and live-range entries,
  * and set/clear ENTER_SCOPE_FUNC.extended_value. `encode=true` re-bases the
- * body to negative offsets relative to the scope_ed that sits inside the
+ * body to negative offsets relative to the scope_ex that sits inside the
  * top-level parent's frame at parent_last_var + T_base + scope_T (CVs reach
  * further back into the parent's CV table; TMPs/VARs sit within the
  * scope-fn's portion of the parent frame). `encode=false` reverses it.
  * RECV opcodes appear before ENTER_SCOPE_FUNC and are left alone. */
 static void zend_apply_scope_func_offsets(
-	zend_op_array *scope_op, uint32_t scope_ed_offset, uint32_t scope_T, bool encode)
+	zend_op_array *scope_op, uint32_t scope_ex_offset, uint32_t scope_T, bool encode)
 {
 	uint32_t scope_frame_size = (uint32_t)((ZEND_CALL_FRAME_SLOT + scope_op->last_var + scope_T) * sizeof(zval));
-	uint32_t ed_off = encode ? (uint32_t)-(int32_t)scope_ed_offset : scope_ed_offset;
+	uint32_t ed_off = encode ? (uint32_t)-(int32_t)scope_ex_offset : scope_ex_offset;
 	uint32_t fr_off = encode ? (uint32_t)-(int32_t)scope_frame_size : scope_frame_size;
 
 	bool in_body = false;
@@ -8778,7 +8778,7 @@ static void zend_apply_scope_func_offsets(
 		zend_op *opline = &scope_op->opcodes[i];
 		if (opline->opcode == ZEND_ENTER_SCOPE_FUNC) {
 			in_body = true;
-			opline->extended_value = encode ? scope_ed_offset : 0;
+			opline->extended_value = encode ? scope_ex_offset : 0;
 			continue;
 		}
 		if (!in_body) continue;
@@ -8803,8 +8803,8 @@ static void zend_walk_scope_func_offsets(
 	zend_op_array *scope_op, uint32_t parent_last_var,
 	uint32_t T_base, uint32_t scope_T, bool encode)
 {
-	uint32_t scope_ed_offset = (uint32_t)((ZEND_CALL_FRAME_SLOT + parent_last_var + T_base + scope_T) * sizeof(zval));
-	zend_apply_scope_func_offsets(scope_op, scope_ed_offset, scope_T, encode);
+	uint32_t scope_ex_offset = (uint32_t)((ZEND_CALL_FRAME_SLOT + parent_last_var + T_base + scope_T) * sizeof(zval));
+	zend_apply_scope_func_offsets(scope_op, scope_ex_offset, scope_T, encode);
 
 	for (uint32_t i = 0; i < scope_op->num_dynamic_func_defs; i++) {
 		zend_op_array *nested = scope_op->dynamic_func_defs[i];
@@ -8820,7 +8820,7 @@ static void zend_walk_scope_func_offsets(
 	}
 }
 
-/* pass_two extension: reserve T slots for each DECLARE_SCOPE_FUNC's scope_ed
+/* pass_two extension: reserve T slots for each DECLARE_SCOPE_FUNC's scope_ex
  * frame plus tracked-temp bookkeeping. Top-level regular op_arrays
  * additionally encode every scope-fn child's body via zend_walk_scope_func_offsets
  * — the walk uses the top-level last_var, so nested scope-fn op_arrays must
@@ -8895,28 +8895,28 @@ ZEND_API void zend_pass_two_revert_scope_fn_reservations(zend_op_array *op_array
  * Does NOT recurse into nested children — those run their own sandwich.
  *
  * `scope_T` must match the value the original fixup used (op_array->T as the
- * outer parent's pass_two saw it). `scope_ed_offset` is recovered from
+ * outer parent's pass_two saw it). `scope_ex_offset` is recovered from
  * ENTER_SCOPE_FUNC.extended_value on un-fixup; the same value must round-trip
- * to refixup so the scope_ed's position inside the parent's frame stays
+ * to refixup so the scope_ex's position inside the parent's frame stays
  * consistent across passes that mutate T (e.g. temp-vars). */
 ZEND_API uint32_t zend_unfixup_scope_func_self(zend_op_array *scope_op, uint32_t scope_T)
 {
 	ZEND_ASSERT(scope_op->fn_flags2 & ZEND_ACC2_SCOPE_FUNC);
-	uint32_t scope_ed_offset = 0;
+	uint32_t scope_ex_offset = 0;
 	for (uint32_t i = 0; i < scope_op->last; i++) {
 		if (scope_op->opcodes[i].opcode == ZEND_ENTER_SCOPE_FUNC) {
-			scope_ed_offset = scope_op->opcodes[i].extended_value;
+			scope_ex_offset = scope_op->opcodes[i].extended_value;
 			break;
 		}
 	}
-	zend_apply_scope_func_offsets(scope_op, scope_ed_offset, scope_T, /*encode=*/false);
-	return scope_ed_offset;
+	zend_apply_scope_func_offsets(scope_op, scope_ex_offset, scope_T, /*encode=*/false);
+	return scope_ex_offset;
 }
 
-ZEND_API void zend_refixup_scope_func_self(zend_op_array *scope_op, uint32_t scope_ed_offset, uint32_t scope_T)
+ZEND_API void zend_refixup_scope_func_self(zend_op_array *scope_op, uint32_t scope_ex_offset, uint32_t scope_T)
 {
 	ZEND_ASSERT(scope_op->fn_flags2 & ZEND_ACC2_SCOPE_FUNC);
-	zend_apply_scope_func_offsets(scope_op, scope_ed_offset, scope_T, /*encode=*/true);
+	zend_apply_scope_func_offsets(scope_op, scope_ex_offset, scope_T, /*encode=*/true);
 }
 
 static zend_op_array *zend_compile_func_decl_ex(
@@ -9061,7 +9061,7 @@ static zend_op_array *zend_compile_func_decl_ex(
 	if (CG(active_op_array)->fn_flags & ZEND_ACC_GENERATOR) {
 		zend_mark_function_as_generator();
 		/* For scope functions, GENERATOR_CREATE must run AFTER ENTER_SCOPE_FUNC
-		 * (so EX is the scope_ed). Emitted at the bottom of the scope-fn
+		 * (so EX is the scope_ex). Emitted at the bottom of the scope-fn
 		 * branch below in that case; here for everyone else. */
 	}
 	if (decl->kind == ZEND_AST_ARROW_FUNC) {
@@ -9122,10 +9122,10 @@ static zend_op_array *zend_compile_func_decl_ex(
 
 	/* GENERATOR_CREATE is emitted unconditionally here, after the
 	 * scope-fn branch above. For scope-fn generators, ENTER_SCOPE_FUNC
-	 * must run first (so EX is the scope_ed); the extended_value=1
+	 * must run first (so EX is the scope_ex); the extended_value=1
 	 * marker tells the runtime handler to take the scope-fn path
 	 * (don't memcpy/emalloc, pin generator->execute_data to the
-	 * existing scope_ed, attach to closure). */
+	 * existing scope_ex, attach to closure). */
 	if (CG(active_op_array)->fn_flags & ZEND_ACC_GENERATOR) {
 		zend_op *gen_create_opline = zend_emit_op(NULL, ZEND_GENERATOR_CREATE, NULL, NULL);
 		if (is_scope_fn) {

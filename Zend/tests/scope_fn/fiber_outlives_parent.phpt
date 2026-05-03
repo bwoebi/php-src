@@ -20,7 +20,7 @@ try {
     echo "caught at outer return: ", $e->getMessage(), "\n";
 }
 
-/* Pollute the vm_stack region outer used (where scope_ed lived) so any
+/* Pollute the vm_stack region outer used (where scope_ex lived) so any
  * stale pointer the fiber retained would land in overwritten memory. */
 function churn(int $depth): int {
     $a=1; $b=2; $c=3; $d=4; $e=5; $f=6; $g=7; $h=8;
@@ -33,7 +33,7 @@ function churn(int $depth): int {
 }
 for ($iter = 0; $iter < 100; $iter++) churn(50);
 
-/* Fiber was force-unwound through scope_ed at outer's exit; the visible
+/* Fiber was force-unwound through scope_ex at outer's exit; the visible
  * escape Error is stashed on the fiber and surfaces here. */
 try {
     $fiber->resume();

@@ -134,7 +134,7 @@ struct _zend_fiber {
 	 * functions. While the unwind is in flight, ZEND_FIBER_FLAG_DESTROYED
 	 * is also set on the fiber so any Fiber::suspend in the body's
 	 * finally/catch throws naturally; forced_unwind_target identifies the
-	 * scope_ed where the unwind stops. Cleared at the scope_ed boundary.
+	 * scope_ex where the unwind stops. Cleared at the scope_ex boundary.
 	 * NULL in normal operation. */
 	zend_execute_data *forced_unwind_target;
 	/* Visible escape Error to throw to the user on the fiber's next resume.
@@ -157,9 +157,9 @@ ZEND_API zend_fiber_transfer zend_fiber_force_unwind_resume(zend_fiber *fiber, z
 /* Synthetically suspend the active fiber (mirroring zend_fiber_suspend_internal)
  * from inside a VM helper such as zend_leave_helper. Used to return control to
  * the caller of zend_fiber_force_unwind_resume the moment a forced-unwind
- * target frame finishes its leave. `current_ed` is stored as fiber->execute_data
+ * target frame finishes its leave. `current_ex` is stored as fiber->execute_data
  * so the next resume continues from that point. */
-ZEND_API void zend_fiber_synthetic_suspend(zend_fiber *fiber, zend_execute_data *current_ed);
+ZEND_API void zend_fiber_synthetic_suspend(zend_fiber *fiber, zend_execute_data *current_ex);
 
 /* These functions may be used to create custom fiber objects using the bundled fiber switching context. */
 ZEND_API zend_result zend_fiber_init_context(zend_fiber_context *context, void *kind, zend_fiber_coroutine coroutine, size_t stack_size);

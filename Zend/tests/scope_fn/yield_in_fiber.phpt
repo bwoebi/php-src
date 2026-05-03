@@ -40,7 +40,7 @@ try {
     echo "caught: ", $e->getMessage(), "\n";
 }
 
-/* Pollute the vm_stack region that held outer's frame (and scope_ed): if
+/* Pollute the vm_stack region that held outer's frame (and scope_ex): if
  * the generator or fiber kept a stale pointer into that region, the next
  * access would land in overwritten memory. */
 function churn(int $depth): int {

@@ -755,7 +755,7 @@ ZEND_API zend_fiber_transfer zend_fiber_force_unwind_resume(zend_fiber *fiber, z
 	return zend_fiber_resume_internal(fiber, exception, /* exception */ true);
 }
 
-ZEND_API void zend_fiber_synthetic_suspend(zend_fiber *fiber, zend_execute_data *current_ed)
+ZEND_API void zend_fiber_synthetic_suspend(zend_fiber *fiber, zend_execute_data *current_ex)
 {
 	/* Mirrors zend_fiber_suspend_internal, but called from a VM helper at
 	 * a synthetic suspend point (post forced-unwind boundary in
@@ -768,7 +768,7 @@ ZEND_API void zend_fiber_synthetic_suspend(zend_fiber *fiber, zend_execute_data 
 	zend_fiber_context *caller = fiber->caller;
 	fiber->previous = EG(current_fiber_context);
 	fiber->caller = NULL;
-	fiber->execute_data = current_ed;
+	fiber->execute_data = current_ex;
 
 	zend_fiber_transfer transfer = zend_fiber_switch_to(caller, NULL, false);
 

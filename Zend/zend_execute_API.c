@@ -1816,10 +1816,10 @@ ZEND_API zend_array *zend_rebuild_symbol_table(void) /* {{{ */
 	/* Scope functions share CVs with their parent — rebuild on the parent
 	 * frame and adopt the result. */
 	if (ex->func->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
-		zend_execute_data *parent_ed = zend_scope_fn_parent_ed(ex);
-		if (parent_ed) {
+		zend_execute_data *parent_ex = zend_scope_fn_parent_ex(ex);
+		if (parent_ex) {
 			zend_execute_data *saved = EG(current_execute_data);
-			EG(current_execute_data) = parent_ed;
+			EG(current_execute_data) = parent_ex;
 			symbol_table = zend_rebuild_symbol_table();
 			EG(current_execute_data) = saved;
 			ex->symbol_table = symbol_table;

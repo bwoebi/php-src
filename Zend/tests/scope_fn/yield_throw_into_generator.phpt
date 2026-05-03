@@ -1,5 +1,5 @@
 --TEST--
-Generator::throw into a scope-fn generator: exception propagates through scope_ed body
+Generator::throw into a scope-fn generator: exception propagates through scope_ex body
 --FILE--
 <?php
 function outer() {

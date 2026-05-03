@@ -1486,7 +1486,7 @@ static void zend_optimize_op_array(zend_op_array      *op_array,
 	 * last_var + T stay in bounds. op_array->T at this point is install_T
 	 * (the value the original fixup encoded with), which is what un-fixup
 	 * needs to correctly invert the install. */
-	uint32_t saved_scope_ed_offset = is_scope_fn
+	uint32_t saved_scope_ex_offset = is_scope_fn
 		? zend_unfixup_scope_func_self(op_array, op_array->T)
 		: 0;
 
@@ -1515,11 +1515,11 @@ static void zend_optimize_op_array(zend_op_array      *op_array,
 	 * T, body TMPs land at the top of the parent's reservation [T_base +
 	 * install_T - new_T, T_base + install_T) — still inside the slots the
 	 * parent reserved at its pass_two_install. The unused bottom slots are
-	 * harmless. scope_ed_offset itself was set at parent's install and is
+	 * harmless. scope_ex_offset itself was set at parent's install and is
 	 * round-tripped through the saved value above; pass 9 cannot shift
-	 * scope_ed inside the parent's frame. */
+	 * scope_ex inside the parent's frame. */
 	if (is_scope_fn) {
-		zend_refixup_scope_func_self(op_array, saved_scope_ed_offset, op_array->T);
+		zend_refixup_scope_func_self(op_array, saved_scope_ex_offset, op_array->T);
 	}
 
 	/* Redo pass_two() */

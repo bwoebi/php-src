@@ -24,9 +24,9 @@ try {
     echo "caught: ", $e->getMessage(), "\n";
 }
 
-/* Force the parent's vm_stack region (where scope_ed lived) to be
+/* Force the parent's vm_stack region (where scope_ex lived) to be
  * reused by subsequent function calls. If the generator's saved state
- * wasn't properly torn down, this would clobber the scope_ed memory
+ * wasn't properly torn down, this would clobber the scope_ex memory
  * the generator still references. */
 function churn(int $depth): int {
     $a=1; $b=2; $c=3; $d=4; $e=5; $f=6; $g=7; $h=8;

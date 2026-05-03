@@ -333,8 +333,8 @@ static zend_always_inline zend_vm_stack zend_vm_stack_new_page(size_t size, zend
 }
 
 /* Returns true if `ptr` lies inside any segment of the given vm_stack chain.
- * Used at ZEND_ENTER_SCOPE_FUNC to determine whether the scope_ed lives on
- * the currently-active vm_stack: if not, it's a cross-stack scope_ed and
+ * Used at ZEND_ENTER_SCOPE_FUNC to determine whether the scope_ex lives on
+ * the currently-active vm_stack: if not, it's a cross-stack scope_ex and
  * suspending its containing fiber would orphan a pointer once the parent's
  * frame is freed. */
 static zend_always_inline bool zend_pointer_in_vm_stack(zend_vm_stack stack, const void *ptr) {
@@ -348,14 +348,14 @@ static zend_always_inline bool zend_pointer_in_vm_stack(zend_vm_stack stack, con
 	return false;
 }
 
-/* Common scope_ed teardown: detaches the closure's attached_object back-ref
+/* Common scope_ex teardown: detaches the closure's attached_object back-ref
  * and clears the recursion guard. Caller is responsible for releasing the
  * closure's ZEND_CALL_CLOSURE ref (leave_helper does an explicit OBJ_RELEASE
  * after; the generator-close path lets zend_generator_free_storage's
  * closure-release handle it). */
-static zend_always_inline void zend_scope_ed_cleanup(zend_execute_data *scope_ed)
+static zend_always_inline void zend_scope_ex_cleanup(zend_execute_data *scope_ex)
 {
-	zend_object *closure_obj = ZEND_CLOSURE_OBJECT(scope_ed->func);
+	zend_object *closure_obj = ZEND_CLOSURE_OBJECT(scope_ex->func);
 	zval *this_ptr = zend_closure_get_this_ptr_ptr(closure_obj);
 	zend_object **attached_object_ptr = zend_closure_get_attached_object_ptr(closure_obj);
 
@@ -366,12 +366,12 @@ static zend_always_inline void zend_scope_ed_cleanup(zend_execute_data *scope_ed
 /* True iff `ex` is a scope-fn frame.
  *
  * fn_flags2 says "this *function* is a scope-fn closure"; the call_info
- * ZEND_CALL_SCOPE_FN bit is set only on the scope_ed (at ENTER_SCOPE_FUNC),
- * so it distinguishes the scope_ed from the original call frame that runs
+ * ZEND_CALL_SCOPE_FN bit is set only on the scope_ex (at ENTER_SCOPE_FUNC),
+ * so it distinguishes the scope_ex from the original call frame that runs
  * INIT_DYNAMIC_CALL → RECVs → ENTER_SCOPE_FUNC. We require both: an
  * observer plugin may set ZEND_CALL_OBSERVED (alias of ZEND_CALL_SCOPE_FN)
  * on call frames of any function, so the bit alone is not specific. */
-static zend_always_inline bool zend_is_scope_ed(const zend_execute_data *ex)
+static zend_always_inline bool zend_is_scope_ex(const zend_execute_data *ex)
 {
 	ZEND_ASSERT(ex->func != NULL);
 	return (ZEND_CALL_INFO(ex) & ZEND_CALL_SCOPE_FN)
@@ -386,7 +386,7 @@ static zend_always_inline bool zend_is_scope_ed(const zend_execute_data *ex)
  * which case EG(current_execute_data) holds the new frame to install. The
  * caller cannot pass &execute_data: the VM may keep it in a global register
  * variable, so loading from EG(current_execute_data) is the supported path. */
-ZEND_API bool zend_leave_scope_ed(zend_execute_data *scope_ed, uint32_t call_info);
+ZEND_API bool zend_leave_scope_ex(zend_execute_data *scope_ex, uint32_t call_info);
 
 static zend_always_inline void zend_vm_init_call_frame(zend_execute_data *call, uint32_t call_info, zend_function *func, uint32_t num_args, void *object_or_called_scope)
 {
@@ -576,15 +576,15 @@ static zend_always_inline void zend_vm_stack_extend_call_frame(
 ZEND_API void ZEND_FASTCALL zend_free_extra_named_params(zend_array *extra_named_params);
 
 /* Pop the call frame that originally invoked a scope fn from the vm_stack.
- * `original_call_frame` is recovered from a scope_ed's extra_named_params via
- * the SCOPE_ED_ENP_TAG_MASK clear. Frees extra args / extra named params on
+ * `original_call_frame` is recovered from a scope_ex's extra_named_params via
+ * the ZEND_SCOPE_EX_EXTRA_NAMED_PARAMS_TAG_MASK clear. Frees extra args / extra named params on
  * that frame, then pops it.
  *
  * If the original frame had ZEND_CALL_ALLOCATED (it landed on its own
  * vm_stack page), we delegate to zend_vm_stack_free_call_frame_ex to pop
  * the page and restore the previous one — a plain vm_stack_top reset would
  * leak the page. */
-static zend_always_inline void zend_scope_ed_pop_original_call_frame(zend_execute_data *original_call_frame)
+static zend_always_inline void zend_scope_ex_pop_original_call_frame(zend_execute_data *original_call_frame)
 {
 	ZEND_ASSERT(original_call_frame != NULL);
 	uint32_t orig_info = ZEND_CALL_INFO(original_call_frame);
@@ -600,9 +600,9 @@ static zend_always_inline void zend_scope_ed_pop_original_call_frame(zend_execut
 /* For a scope-fn frame (ZEND_ACC2_SCOPE_FUNC): return the top-level parent
  * execute_data, recovered from the closure's stash. NULL if the parent has
  * already exited (lifetime error). */
-static zend_always_inline zend_execute_data *zend_scope_fn_parent_ed(const zend_execute_data *scope_ed)
+static zend_always_inline zend_execute_data *zend_scope_fn_parent_ex(const zend_execute_data *scope_ex)
 {
-	zval *this_ptr = zend_closure_get_this_ptr_ptr(ZEND_CLOSURE_OBJECT(scope_ed->func));
+	zval *this_ptr = zend_closure_get_this_ptr_ptr(ZEND_CLOSURE_OBJECT(scope_ex->func));
 	return (zend_execute_data *)Z_PTR_P(this_ptr);
 }
 
@@ -613,19 +613,19 @@ static zend_always_inline zend_execute_data *zend_scope_fn_parent_ed(const zend_
  * frame. Returns NULL if the parent frame has gone away (lifetime error) or
  * there is no original call frame for an extra-arg lookup. */
 static zend_always_inline zval *zend_scope_fn_get_arg_zval(
-	const zend_execute_data *scope_ed, uint32_t i)
+	const zend_execute_data *scope_ex, uint32_t i)
 {
-	const zend_op_array *op_array = &scope_ed->func->op_array;
+	const zend_op_array *op_array = &scope_ex->func->op_array;
 	if (i < op_array->num_args) {
-		zend_execute_data *parent_ed = zend_scope_fn_parent_ed(scope_ed);
-		if (UNEXPECTED(!parent_ed)) {
+		zend_execute_data *parent_ex = zend_scope_fn_parent_ex(scope_ex);
+		if (UNEXPECTED(!parent_ex)) {
 			return NULL;
 		}
 		uint32_t parent_cv_offset = (uint32_t)Z_LVAL(op_array->literals[i]);
-		return ZEND_CALL_VAR(parent_ed, parent_cv_offset);
+		return ZEND_CALL_VAR(parent_ex, parent_cv_offset);
 	}
 	zend_execute_data *call_frame = (zend_execute_data *)
-		((uintptr_t)scope_ed->extra_named_params & ~(uintptr_t)ZEND_SCOPE_ED_ENP_TAG_MASK);
+		((uintptr_t)scope_ex->extra_named_params & ~(uintptr_t)ZEND_SCOPE_EX_EXTRA_NAMED_PARAMS_TAG_MASK);
 	if (UNEXPECTED(!call_frame)) {
 		return NULL;
 	}
