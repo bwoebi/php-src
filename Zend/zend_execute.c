@@ -5133,7 +5133,7 @@ ZEND_API void zend_clear_tracked_temporaries(zend_execute_data *execute_data)
 }
 
 /* Handle an in-progress force unwinding when an invalidated scope fn called on a foreign fiber leaves the frame. */
-ZEND_API ZEND_COLD zend_fiber *zend_scope_fn_consume_forced_unwind()
+ZEND_API ZEND_COLD zend_fiber *zend_scope_fn_consume_forced_unwind(void)
 {
 	zend_fiber *unwind_fiber = EG(active_fiber);
 	ZEND_ASSERT(unwind_fiber->flags & ZEND_FIBER_FLAG_DESTROYED);

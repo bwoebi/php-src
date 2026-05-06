@@ -358,7 +358,7 @@ static zend_always_inline bool zend_is_scope_ex(const zend_execute_data *ex)
 }
 
 struct _zend_fiber;
-ZEND_API ZEND_COLD struct _zend_fiber *zend_scope_fn_consume_forced_unwind();
+ZEND_API ZEND_COLD struct _zend_fiber *zend_scope_fn_consume_forced_unwind(void);
 
 static zend_always_inline void zend_vm_init_call_frame(zend_execute_data *call, uint32_t call_info, zend_function *func, uint32_t num_args, void *object_or_called_scope)
 {
@@ -530,7 +530,7 @@ static zend_always_inline void zend_scope_ex_pop_original_call_frame(zend_execut
 /* Top-level parent execute_data; NULL if the parent has already exited. */
 static zend_always_inline zend_execute_data *zend_scope_fn_parent_ex(const zend_execute_data *execute_data)
 {
-	return Z_PTR_P(zend_closure_get_this_ptr_ptr(ZEND_CLOSURE_OBJECT(EX(func))));
+	return (zend_execute_data *)Z_PTR_P(zend_closure_get_this_ptr_ptr(ZEND_CLOSURE_OBJECT(EX(func))));
 }
 
 /* Get the i-th argument of a scope fn: parent CVs for i < num_args, otherwise original frame extra args */
@@ -543,7 +543,7 @@ static zend_always_inline zval *zend_scope_fn_get_arg_zval(const zend_execute_da
 		uint32_t parent_cv_offset = (uint32_t)Z_LVAL(op_array->literals[i]);
 		return ZEND_CALL_VAR(parent_ex, parent_cv_offset);
 	}
-	zend_execute_data *call_frame = Z_PTR_P(ZEND_CALL_VAR_NUM(execute_data, 0));
+	zend_execute_data *call_frame = (zend_execute_data *)Z_PTR_P(ZEND_CALL_VAR_NUM(execute_data, 0));
 	ZEND_ASSERT(call_frame);
 	zval *base = ZEND_CALL_VAR_NUM(call_frame, call_frame->func->op_array.last_var + call_frame->func->op_array.T);
 	return base + (i - op_array->num_args);
