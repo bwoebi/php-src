@@ -19,6 +19,16 @@ PHP 8.6 UPGRADE NOTES
 1. Backward Incompatible Changes
 ========================================
 
+- DOM:
+  . Properties previously documented as @readonly (e.g. DOMNode::$nodeType,
+    DOMDocument::$xmlEncoding, DOMEntity::$actualEncoding, ::$encoding,
+    ::$version) are now declared with asymmetric visibility
+    (public private(set)). Attempts to write to them from outside the
+    class now raise "Cannot modify private(set) property <class>::$<prop>
+    from global scope" instead of the prior readonly modification error.
+    ReflectionProperty::isWritable() also reports these properties
+    accurately.
+
 - GD:
   . imagesetstyle(), imagefilter() and imagecrop() filter their
     array arguments types/values and raise a TypeError/ValueError
@@ -27,6 +37,8 @@ PHP 8.6 UPGRADE NOTES
 - PCNTL:
   . pcntl_alarm() now raises a ValueError if the seconds argument is
     lower than zero or greater than platform's UINT_MAX.
+  . pcntl_exec() now raises a ValueError if the $args argument is not a list
+    array.
 
 - PCRE:
   . preg_grep() now returns false instead of a partial array when a PCRE
@@ -36,6 +48,13 @@ PHP 8.6 UPGRADE NOTES
 - Phar:
   . Phar::mungServer() now raises a ValueError when an invalid
     argument value is passed instead of being silently ignored.
+
+- PGSQL:
+  . pg_fetch_object() now reports the ValueError for a non-empty
+    $constructor_args on a class without a constructor on the
+    $constructor_args argument instead of $class. Errors raised when
+    the requested class is not instantiable (abstract, interface, enum)
+    now surface before the row is fetched.
 
 - Posix:
   . posix_access() now raises a ValueError when an invalid $flags
@@ -60,6 +79,8 @@ PHP 8.6 UPGRADE NOTES
     logic in their updateTimestamp() method.
 
 - SPL:
+  . SplObjectStorage::getHash() implementations may no longer mutate any
+    SplObjectStorage instance. Attempting to do so now throws an Error.
   . SplFileObject::next() now advances the stream when no prior current()
     call has cached a line. A subsequent current() call returns the new
     line rather than the previous one.
@@ -78,15 +99,28 @@ PHP 8.6 UPGRADE NOTES
     argument value is passed.
   . array_change_key_case() now raises a ValueError when an invalid $case
     argument value is passed.
+  . getenv() and putenv() now raises a ValueError when the first argument
+    contains null bytes.
+  . parse_str() now raises a ValueError when the $string argument contains
+    null bytes.
+  . linkinfo() now raises a ValueError when the $path argument is empty.
   . pathinfo() now raises a ValueError when an invalid $flag
     argument value is passed.
   . scandir() now raises a ValueError when an invalid $sorting_order
     argument value is passed.
+  . proc_open() now raises a ValueError when the $cwd argument contains
+    null bytes.
 
 - Zip:
   . ZipArchive::extractTo now raises a TypeError for the
     files argument if one or more of the entries is not
     a string.
+
+- Zlib:
+  . deflate_init() now raises a TypeError when the value for option
+    "level", "memory", "window", or "strategy" is not of type int.
+  . inflate_init() now raises a TypeError when the value for option
+    "window" is not of type int.
 
 ========================================
 2. New Features
@@ -115,6 +149,15 @@ PHP 8.6 UPGRADE NOTES
   . Added extra info about error location to the JSON error messages returned
     from json_last_error_msg() and JsonException message.
 
+- OpenSSL:
+  . Added TLS session resumption support for streams with new stream context
+    options: session_data, session_new_cb, session_cache, session_cache_size,
+    session_timeout, session_id_context, session_get_cb, session_remove_cb,
+    and num_tickets. This allows saving and restoring client sessions across
+    requests, implementing custom server-side session storage, and controlling
+    session cache behavior.
+    RFC: https://wiki.php.net/rfc/tls_session_resumption
+
 - Phar:
   . Overriding the getMTime() and getPathname() methods of SplFileInfo now
     influences the result of the phar buildFrom family of functions.
@@ -137,9 +180,25 @@ PHP 8.6 UPGRADE NOTES
 4. Deprecated Functionality
 ========================================
 
+- Mbstring:
+  . Mbregex has been deprecated, because the underlying Oniguruma library
+    is no longer maintained.
+    RFC: https://wiki.php.net/rfc/eol-oniguruma
+
 ========================================
 5. Changed Functions
 ========================================
+
+- GMP:
+  . gmp_fact() now throws a ValueError() if $num does not fit into
+    a unsigned long.
+  . gmp_pow(), gmp_binomial(), gmp_root() and gmp_rootrem() now throw a
+    ValueError if their second argument does not fit into an unsigned long.
+  . The shift (<<, >>) and exponentiation (**) operators on GMP objects
+    now throw a ValueError if the right operand does not fit into an
+    unsigned long.
+  . gmp_powm() modulo-by-zero now raises a DivisionByZeroError whose
+    message includes the function name and argument index ($modulus).
 
 - mysqli:
   . The return structure of mysqli_get_charset() no longer contains
@@ -150,6 +209,10 @@ PHP 8.6 UPGRADE NOTES
 - OpenSSL:
   . Output of openssl_x509_parse() contains criticalExtensions listing all
     critical certificate extensions.
+
+- PDO_DBLIB:
+  . When using persistent connections, there is now a liveness check in the
+    constructor.
 
 - Phar:
   . Phar::mungServer() now supports reference values.
@@ -189,6 +252,11 @@ PHP 8.6 UPGRADE NOTES
 ========================================
 7. New Classes and Interfaces
 ========================================
+
+- OpenSSL:
+  . Openssl\OpensslException
+  . Openssl\Session
+    RFC: https://wiki.php.net/rfc/tls_session_resumption
 
 - Standard:
   . enum SortDirection
@@ -280,6 +348,8 @@ PHP 8.6 UPGRADE NOTES
     callbacks from internal functions and providing for better insight for the
     JIT.
   . The performance of the TAILCALL VM has been improved.
+  . The TAILCALL VM is now enabled on Windows when compiling with Clang >= 19
+    x86_64.
 
 - DOM:
   . Made splitText() faster and consume less memory.

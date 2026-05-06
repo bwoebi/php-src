@@ -620,7 +620,7 @@ PHPAPI pcre_cache_entry* pcre_get_compiled_regex_cache_ex(zend_string *regex, bo
 
 	/* Parse through the leading whitespace, and display a warning if we
 	   get to the end without encountering a delimiter. */
-	while (isspace((int)*(unsigned char *)p)) p++;
+	while (isspace((unsigned char)*p)) p++;
 	if (p >= end_p) {
 		if (key != regex) {
 			zend_string_release_ex(key, 0);
@@ -633,7 +633,7 @@ PHPAPI pcre_cache_entry* pcre_get_compiled_regex_cache_ex(zend_string *regex, bo
 	/* Get the delimiter and display a warning if it is alphanumeric
 	   or a backslash. */
 	delimiter = *p++;
-	if (isalnum((int)*(unsigned char *)&delimiter) || delimiter == '\\' || delimiter == '\0') {
+	if (isalnum((unsigned char)delimiter) || delimiter == '\\' || delimiter == '\0') {
 		if (key != regex) {
 			zend_string_release_ex(key, 0);
 		}
@@ -748,21 +748,23 @@ PHPAPI pcre_cache_entry* pcre_get_compiled_regex_cache_ex(zend_string *regex, bo
 	}
 
 	if (key != regex) {
-		tables = (uint8_t *)zend_hash_find_ptr(&char_tables, BG(ctype_string));
-		if (!tables) {
-			zend_string *_k;
+		zv = zend_hash_str_lookup(&char_tables, ZSTR_VAL(BG(ctype_string)), ZSTR_LEN(BG(ctype_string)));
+		if (Z_ISNULL_P(zv)) {
 			tables = pcre2_maketables(gctx);
 			if (UNEXPECTED(!tables)) {
+				/* Remove the placeholder entry created by zend_hash_str_lookup(),
+				 * set ptr to NULL first so the destructor (pefree) is safe. */
+				ZVAL_PTR(zv, NULL);
+				zend_hash_str_del(&char_tables, ZSTR_VAL(BG(ctype_string)), ZSTR_LEN(BG(ctype_string)));
 				php_error_docref(NULL,E_WARNING, "Failed to generate locale character tables");
 				pcre_handle_exec_error(PCRE2_ERROR_NOMEMORY);
 				zend_string_release_ex(key, 0);
 				efree(pattern);
 				return NULL;
 			}
-			_k = zend_string_init(ZSTR_VAL(BG(ctype_string)), ZSTR_LEN(BG(ctype_string)), 1);
-			GC_MAKE_PERSISTENT_LOCAL(_k);
-			zend_hash_add_ptr(&char_tables, _k, (void *)tables);
-			zend_string_release(_k);
+			ZVAL_PTR(zv, (void *)tables);
+		} else {
+			tables = Z_PTR_P(zv);
 		}
 	}
 	pcre2_set_character_tables(cctx, tables);
@@ -824,19 +826,8 @@ PHPAPI pcre_cache_entry* pcre_get_compiled_regex_cache_ex(zend_string *regex, bo
 	new_entry.refcount = 0;
 	new_entry.subpats_table = NULL;
 
-	rc = pcre2_pattern_info(re, PCRE2_INFO_CAPTURECOUNT, &new_entry.capture_count);
-	if (rc < 0) {
-		if (key != regex) {
-			zend_string_release_ex(key, 0);
-		}
-		pcre2_code_free(new_entry.re);
-		php_error_docref(NULL, E_WARNING, "Internal pcre2_pattern_info() error %d", rc);
-		pcre_handle_exec_error(PCRE2_ERROR_INTERNAL);
-		return NULL;
-	}
-
-	rc = pcre2_pattern_info(re, PCRE2_INFO_NAMECOUNT, &new_entry.name_count);
-	if (rc < 0) {
+	if ((rc = pcre2_pattern_info(re, PCRE2_INFO_CAPTURECOUNT, &new_entry.capture_count)) < 0 ||
+	    (rc = pcre2_pattern_info(re, PCRE2_INFO_NAMECOUNT, &new_entry.name_count)) < 0) {
 		if (key != regex) {
 			zend_string_release_ex(key, 0);
 		}

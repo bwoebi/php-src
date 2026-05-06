@@ -65,6 +65,7 @@ static zend_class_entry *zend_test_forbid_dynamic_call;
 static zend_class_entry *zend_test_ns_foo_class;
 static zend_class_entry *zend_test_ns_unlikely_compile_error_class;
 static zend_class_entry *zend_test_ns_not_unlikely_compile_error_class;
+static zend_class_entry *zend_test_ns_bar_class;
 static zend_class_entry *zend_test_ns2_foo_class;
 static zend_class_entry *zend_test_ns2_ns_foo_class;
 static zend_class_entry *zend_test_unit_enum;
@@ -1043,7 +1044,7 @@ static zend_object *zend_test_class_new(zend_class_entry *class_type)
 
 static void zend_test_class_free_obj(zend_object *object)
 {
-	zend_test_object *intern = (zend_test_object*)((char*)object - XtOffsetOf(zend_test_object, std));
+	zend_test_object *intern = (zend_test_object*)((char*)object - offsetof(zend_test_object, std));
 
 	if (intern->tmp_method) {
 		zend_internal_function *func = intern->tmp_method;
@@ -1058,7 +1059,7 @@ static void zend_test_class_free_obj(zend_object *object)
 
 static zend_function *zend_test_class_method_get(zend_object **object, zend_string *name, const zval *key)
 {
-	zend_test_object *intern = (zend_test_object*)((char*)(*object) - XtOffsetOf(zend_test_object, std));
+	zend_test_object *intern = (zend_test_object*)((char*)(*object) - offsetof(zend_test_object, std));
 
 	if (zend_string_equals_literal_ci(name, "test")) {
 		zend_internal_function *fptr;
@@ -1525,7 +1526,7 @@ PHP_MINIT_FUNCTION(zend_test)
 	zend_test_class_handlers.get_method = zend_test_class_method_get;
 	zend_test_class_handlers.clone_obj = NULL;
 	zend_test_class_handlers.free_obj = zend_test_class_free_obj;
-	zend_test_class_handlers.offset = XtOffsetOf(zend_test_object, std);
+	zend_test_class_handlers.offset = offsetof(zend_test_object, std);
 
 	zend_test_gen_stub_flag_compatibility_test = register_class_ZendTestGenStubFlagCompatibilityTest();
 
@@ -1567,6 +1568,7 @@ PHP_MINIT_FUNCTION(zend_test)
 	zend_test_ns_foo_class = register_class_ZendTestNS_Foo();
 	zend_test_ns_unlikely_compile_error_class = register_class_ZendTestNS_UnlikelyCompileError();
 	zend_test_ns_not_unlikely_compile_error_class = register_class_ZendTestNS_NotUnlikelyCompileError();
+	zend_test_ns_bar_class = register_class_ZendTestNS_Bar();
 	zend_test_ns2_foo_class = register_class_ZendTestNS2_Foo();
 	zend_test_ns2_ns_foo_class = register_class_ZendTestNS2_ZendSubNS_Foo();
 

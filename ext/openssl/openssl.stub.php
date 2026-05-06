@@ -2,6 +2,46 @@
 
 /** @generate-class-entries */
 
+namespace Openssl {
+
+    class OpensslException extends Exception
+    {
+    }
+
+    /**
+     * @strict-properties
+     */
+    final class Session
+    {
+        public readonly string $id;
+
+        public function export(int $format = OPENSSL_ENCODING_PEM): string {}
+
+        public static function import(string $data, int $format = OPENSSL_ENCODING_PEM): Session {}
+
+        public function isResumable(): bool {}
+
+        public function getTimeout(): int {}
+
+        public function getCreatedAt(): int {}
+
+        public function getProtocol(): ?string {}
+
+        public function getCipher(): ?string {}
+
+        public function hasTicket(): bool {}
+
+        public function getTicketLifetimeHint(): ?int {}
+
+        public function __serialize(): array {}
+
+        public function __unserialize(array $data): void {}
+    }
+
+}
+
+namespace {
+
 /**
  * @var string
  * @cvalue OPENSSL_VERSION_TEXT
@@ -409,7 +449,6 @@ const OPENSSL_ENCODING_SMIME = UNKNOWN;
  */
 const OPENSSL_ENCODING_PEM = UNKNOWN;
 
-
 /**
  * @strict-properties
  * @not-serializable
@@ -662,9 +701,9 @@ function openssl_digest(string $data, string $digest_algo, bool $binary = false)
 /**
  * @param string $tag
  */
-function openssl_encrypt(#[\SensitiveParameter] string $data, string $cipher_algo, #[\SensitiveParameter] string $passphrase, int $options = 0, string $iv = "", &$tag = null, string $aad = "", int $tag_length = 16): string|false {}
+function openssl_encrypt(#[\SensitiveParameter] string $data, string $cipher_algo, #[\SensitiveParameter] string $passphrase, int $options = 0, string $iv = "", &$tag = null, ?string $aad = "", int $tag_length = 16): string|false {}
 
-function openssl_decrypt(string $data, string $cipher_algo, #[\SensitiveParameter] string $passphrase, int $options = 0, string $iv = "", ?string $tag = null, string $aad = ""): string|false {}
+function openssl_decrypt(string $data, string $cipher_algo, #[\SensitiveParameter] string $passphrase, int $options = 0, string $iv = "", ?string $tag = null, ?string $aad = ""): string|false {}
 
 function openssl_cipher_iv_length(string $cipher_algo): int|false {}
 
@@ -699,3 +738,5 @@ function openssl_get_cert_locations(): array {}
 function openssl_password_hash(string $algo, #[\SensitiveParameter] string $password, array $options = []): string {}
 function openssl_password_verify(string $algo, #[\SensitiveParameter] string $password, string $hash): bool {}
 #endif
+
+}

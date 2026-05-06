@@ -130,7 +130,9 @@
 #endif
 
 /* pseudo fallthrough keyword; */
-#if defined(__GNUC__) && __GNUC__ >= 7
+#if __STDC_VERSION__ >= 202311L || defined(__cplusplus)
+# define ZEND_FALLTHROUGH [[fallthrough]]
+#elif defined(__GNUC__) && __GNUC__ >= 7
 # define ZEND_FALLTHROUGH __attribute__((__fallthrough__))
 #else
 # define ZEND_FALLTHROUGH ((void)0)
@@ -270,7 +272,7 @@ char *alloca();
 # define ZEND_ATTRIBUTE_NODISCARD
 #endif
 
-#if ZEND_GCC_VERSION >= 3000
+#if ZEND_GCC_VERSION >= 3000 || __has_attribute(const)
 # define ZEND_ATTRIBUTE_CONST __attribute__((const))
 #else
 # define ZEND_ATTRIBUTE_CONST
@@ -312,22 +314,21 @@ char *alloca();
 # define ZEND_ATTRIBUTE_NONNULL_ARGS(...)
 #endif
 
-#if defined(__GNUC__) && ZEND_GCC_VERSION >= 4003
+#if (defined(__GNUC__) && ZEND_GCC_VERSION >= 4003) || __has_attribute(cold)
 # define ZEND_COLD __attribute__((cold))
-# ifdef __OPTIMIZE__
-#  define ZEND_OPT_SIZE  __attribute__((optimize("Os")))
-#  define ZEND_OPT_SPEED __attribute__((optimize("Ofast")))
-# else
-#  define ZEND_OPT_SIZE
-#  define ZEND_OPT_SPEED
-# endif
 #else
 # define ZEND_COLD
+#endif
+
+#if ((defined(__GNUC__) && ZEND_GCC_VERSION >= 4003) || __has_attribute(optimize)) && defined(__OPTIMIZE__)
+# define ZEND_OPT_SIZE  __attribute__((optimize("Os")))
+# define ZEND_OPT_SPEED __attribute__((optimize("Ofast")))
+#else
 # define ZEND_OPT_SIZE
 # define ZEND_OPT_SPEED
 #endif
 
-#if defined(__GNUC__) && ZEND_GCC_VERSION >= 5000
+#if (defined(__GNUC__) && ZEND_GCC_VERSION >= 5000)
 # define ZEND_ATTRIBUTE_UNUSED_LABEL __attribute__((unused));
 # define ZEND_ATTRIBUTE_COLD_LABEL __attribute__((cold));
 #else
@@ -429,10 +430,6 @@ char *alloca();
 #else
 # define EXPECTED(condition)   (condition)
 # define UNEXPECTED(condition) (condition)
-#endif
-
-#ifndef XtOffsetOf
-# define XtOffsetOf(s_type, field) offsetof(s_type, field)
 #endif
 
 #ifndef ZEND_WIN32
@@ -651,8 +648,8 @@ extern "C++" {
 #endif
 
 /* Do not use for conditional declaration of API functions! */
-#if defined(ZEND_INTRIN_PCLMUL_RESOLVER) && defined(ZEND_INTRIN_HAVE_IFUNC_TARGET) && (!defined(__GNUC__) || (ZEND_GCC_VERSION >= 9000))
-/* __builtin_cpu_supports has pclmul from gcc9 */
+#if defined(ZEND_INTRIN_PCLMUL_RESOLVER) && defined(ZEND_INTRIN_HAVE_IFUNC_TARGET) && (!defined(__GNUC__) || (defined(__clang__) && __clang_major__ >= 19) || (ZEND_GCC_VERSION >= 9000))
+/* __builtin_cpu_supports has pclmul from gcc9 and clang 19 */
 # define ZEND_INTRIN_PCLMUL_FUNC_PROTO 1
 #elif defined(ZEND_INTRIN_PCLMUL_RESOLVER)
 # define ZEND_INTRIN_PCLMUL_FUNC_PTR 1
@@ -677,8 +674,8 @@ extern "C++" {
 #endif
 
 /* Do not use for conditional declaration of API functions! */
-#if defined(ZEND_INTRIN_SSE4_2_PCLMUL_RESOLVER) && defined(ZEND_INTRIN_HAVE_IFUNC_TARGET) && (!defined(__GNUC__) || (ZEND_GCC_VERSION >= 9000))
-/* __builtin_cpu_supports has pclmul from gcc9 */
+#if defined(ZEND_INTRIN_SSE4_2_PCLMUL_RESOLVER) && defined(ZEND_INTRIN_HAVE_IFUNC_TARGET) && (!defined(__GNUC__) || (defined(__clang__) && __clang_major__ >= 19) || (ZEND_GCC_VERSION >= 9000))
+/* __builtin_cpu_supports has pclmul from gcc9 and clang 19 */
 # define ZEND_INTRIN_SSE4_2_PCLMUL_FUNC_PROTO 1
 #elif defined(ZEND_INTRIN_SSE4_2_PCLMUL_RESOLVER)
 # define ZEND_INTRIN_SSE4_2_PCLMUL_FUNC_PTR 1

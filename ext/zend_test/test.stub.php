@@ -187,7 +187,9 @@ namespace {
     }
 
     final class ZendTestForbidDynamicCall {
+        /** @forbid-dynamic-calls */
         public function call(): void {}
+        /** @forbid-dynamic-calls */
         public static function callStatic(): void {}
     }
 
@@ -363,6 +365,8 @@ namespace ZendTestNS {
         public function method(): int {}
     }
 
+    interface Bar {}
+
     class UnlikelyCompileError {
         /* This method signature would create a compile error due to the string
          * "ZendTestNS\UnlikelyCompileError" in the generated macro call */
@@ -378,11 +382,20 @@ namespace ZendTestNS {
 
 namespace ZendTestNS2 {
 
+    use ZendTestNS\Foo as FooAlias;
+    use ZendTestNS\UnlikelyCompileError;
+    use ZendTestNS\{NotUnlikelyCompileError};
+
     /** @var string */
     const ZEND_CONSTANT_A = "namespaced";
 
     class Foo {
         public ZendSubNS\Foo $foo;
+        public ZendSubNS\Foo&\ZendTestNS\Bar $intersectionProp;
+        public ZendSubNS\Foo|\ZendTestNS\Bar $unionProp;
+        public FooAlias $fooAlias;
+        public UnlikelyCompileError $unlProp;
+        public NotUnlikelyCompileError $notUnlProp;
 
         public function method(): void {}
     }
