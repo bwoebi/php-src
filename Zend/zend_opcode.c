@@ -951,7 +951,6 @@ static void zend_calc_live_ranges(
 	memset(last_use, -1, sizeof(uint32_t) * op_array->T);
 
 	ZEND_ASSERT(!op_array->live_range);
-
 	while (opnum > 0) {
 		opnum--;
 		opline--;

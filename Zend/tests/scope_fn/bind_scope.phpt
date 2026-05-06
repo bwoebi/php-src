@@ -19,17 +19,19 @@ function test() {
     $r = new ReflectionFunction($bound);
     var_dump($r->getClosureScopeClass()?->name);
 
-    /* Rebind to incompatible internal class fails. */
+    /* Rebind to incompatible internal class fails (warning today, error in PHP 9). */
     try {
-        Closure::bind($fn, null, ArrayObject::class);
-        echo "no error\n";
+        $r = Closure::bind($fn, null, ArrayObject::class);
+        var_dump($r);
     } catch (Error $e) {
         echo $e->getMessage(), "\n";
     }
 }
 test();
 ?>
---EXPECT--
+--EXPECTF--
 bool(true)
 string(1) "A"
-Cannot bind scope function to scope of internal class ArrayObject
+
+Warning: Cannot bind closure to scope of internal class ArrayObject, this will be an error in PHP 9 in %s on line %d
+NULL

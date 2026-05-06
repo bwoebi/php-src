@@ -1159,11 +1159,7 @@ static void zend_optimize(zend_op_array      *op_array,
 
 	/* pass 11:
 	 * - Compact literals table
-	 *
-	 * compact_literals pins ENTER_SCOPE_FUNC's parameter→parent-CV
-	 * literal run via the LITERAL_INFO_PIN marker so the contiguous
-	 * layout that zend_scope_fn_get_arg_zval depends on survives the
-	 * dedup/reorder pass. */
+	 */
 	if ((ZEND_OPTIMIZER_PASS_11 & ctx->optimization_level) &&
 	    (!(ZEND_OPTIMIZER_PASS_6 & ctx->optimization_level) ||
 	     !(ZEND_OPTIMIZER_PASS_7 & ctx->optimization_level))) {
@@ -1486,8 +1482,9 @@ static void zend_optimize_op_array(zend_op_array      *op_array,
 	 * last_var + T stay in bounds. op_array->T at this point is install_T
 	 * (the value the original fixup encoded with), which is what un-fixup
 	 * needs to correctly invert the install. */
+	uint32_t saved_scope_T = is_scope_fn ? op_array->T : 0;
 	uint32_t saved_scope_ex_offset = is_scope_fn
-		? zend_unfixup_scope_func_self(op_array, op_array->T)
+		? zend_unfixup_scope_func_self(op_array, saved_scope_T)
 		: 0;
 
 	/* Revert pass_two() */
@@ -1511,15 +1508,14 @@ static void zend_optimize_op_array(zend_op_array      *op_array,
 		zend_optimizer_compact_literals(op_array, ctx);
 	}
 
-	/* Sandwich close: re-encode using the post-optimize T. If pass 9 shrunk
-	 * T, body TMPs land at the top of the parent's reservation [T_base +
-	 * install_T - new_T, T_base + install_T) — still inside the slots the
-	 * parent reserved at its pass_two_install. The unused bottom slots are
-	 * harmless. scope_ex_offset itself was set at parent's install and is
-	 * round-tripped through the saved value above; pass 9 cannot shift
-	 * scope_ex inside the parent's frame. */
+	/* Sandwich close: re-encode using the SAVED install_T (not the post-
+	 * optimize T). This pins body TMPs at the bottom of the parent's
+	 * reservation [T_base, T_base + new_T) — keeping them clear of nested
+	 * scope_ex frames that sit higher in body's logical T region. With the
+	 * symmetric revert/install pair, redo_pass_two restores op_array->T to
+	 * install_T anyway, so the encoding round-trips. */
 	if (is_scope_fn) {
-		zend_refixup_scope_func_self(op_array, saved_scope_ex_offset, op_array->T);
+		zend_refixup_scope_func_self(op_array, saved_scope_ex_offset, saved_scope_T);
 	}
 
 	/* Redo pass_two() */

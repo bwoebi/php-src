@@ -332,15 +332,9 @@ static zend_always_inline zend_vm_stack zend_vm_stack_new_page(size_t size, zend
 	return page;
 }
 
-/* Returns true if `ptr` lies inside any segment of the given vm_stack chain.
- * Used at ZEND_ENTER_SCOPE_FUNC to determine whether the scope_ex lives on
- * the currently-active vm_stack: if not, it's a cross-stack scope_ex and
- * suspending its containing fiber would orphan a pointer once the parent's
- * frame is freed. */
-static zend_always_inline bool zend_pointer_in_vm_stack(zend_vm_stack stack, const void *ptr) {
+static zend_always_inline bool zend_pointer_in_vm_stack(zend_vm_stack stack, void *ptr) {
 	while (stack) {
-		if ((const char *)ptr >= (const char *)stack
-		 && (const char *)ptr <  (const char *)stack->end) {
+		if (ptr >= (void *)stack && ptr < (void *)stack->end) {
 			return true;
 		}
 		stack = stack->prev;
@@ -348,29 +342,14 @@ static zend_always_inline bool zend_pointer_in_vm_stack(zend_vm_stack stack, con
 	return false;
 }
 
-/* Common scope_ex teardown: detaches the closure's attached_object back-ref
- * and clears the recursion guard. Caller is responsible for releasing the
- * closure's ZEND_CALL_CLOSURE ref (leave_helper does an explicit OBJ_RELEASE
- * after; the generator-close path lets zend_generator_free_storage's
- * closure-release handle it). */
-static zend_always_inline void zend_scope_ex_cleanup(zend_execute_data *scope_ex)
+static zend_always_inline void zend_scope_fn_detach(zend_execute_data *scope_ex)
 {
 	zend_object *closure_obj = ZEND_CLOSURE_OBJECT(scope_ex->func);
-	zval *this_ptr = zend_closure_get_this_ptr_ptr(closure_obj);
-	zend_object **attached_object_ptr = zend_closure_get_attached_object_ptr(closure_obj);
-
-	*attached_object_ptr = NULL;
-	Z_EXTRA_P(this_ptr) = 0;
+	*zend_closure_get_attached_object_ptr(closure_obj) = NULL;
+	Z_EXTRA_P(zend_closure_get_this_ptr_ptr(closure_obj)) = 0;
 }
 
-/* True iff `ex` is a scope-fn frame.
- *
- * fn_flags2 says "this *function* is a scope-fn closure"; the call_info
- * ZEND_CALL_SCOPE_FN bit is set only on the scope_ex (at ENTER_SCOPE_FUNC),
- * so it distinguishes the scope_ex from the original call frame that runs
- * INIT_DYNAMIC_CALL → RECVs → ENTER_SCOPE_FUNC. We require both: an
- * observer plugin may set ZEND_CALL_OBSERVED (alias of ZEND_CALL_SCOPE_FN)
- * on call frames of any function, so the bit alone is not specific. */
+/* Taking into account that ZEND_CALL_OBSERVED is aliased of ZEND_CALL_SCOPE_FN, checking that ZEND_ACC2_SCOPE_FUNC is actually set to distinguish */
 static zend_always_inline bool zend_is_scope_ex(const zend_execute_data *ex)
 {
 	ZEND_ASSERT(ex->func != NULL);
@@ -378,15 +357,8 @@ static zend_always_inline bool zend_is_scope_ex(const zend_execute_data *ex)
 		&& (ex->func->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC);
 }
 
-/* leave_helper extension: scope-fn frames have their own teardown sequence
- * (detach attached object; clear forced-unwind state; pop the original call
- * frame from the vm_stack) that doesn't fit the regular fast/mid/slow path.
- * Routed via the ZEND_CALL_SCOPE_FN flag set at ENTER_SCOPE_FUNC. Returns
- * true if the caller should ZEND_VM_RETURN(); false to fall through, in
- * which case EG(current_execute_data) holds the new frame to install. The
- * caller cannot pass &execute_data: the VM may keep it in a global register
- * variable, so loading from EG(current_execute_data) is the supported path. */
-ZEND_API bool zend_leave_scope_ex(zend_execute_data *scope_ex, uint32_t call_info);
+struct _zend_fiber;
+ZEND_API ZEND_COLD struct _zend_fiber *zend_scope_fn_consume_forced_unwind();
 
 static zend_always_inline void zend_vm_init_call_frame(zend_execute_data *call, uint32_t call_info, zend_function *func, uint32_t num_args, void *object_or_called_scope)
 {
@@ -436,16 +408,12 @@ static zend_always_inline zend_execute_data *zend_vm_stack_push_call_frame(uint3
 static zend_always_inline void zend_vm_stack_free_extra_args_ex(uint32_t call_info, zend_execute_data *call)
 {
 	if (UNEXPECTED(call_info & ZEND_CALL_FREE_EXTRA_ARGS)) {
-		/* Guard: ZEND_CALL_FREE_EXTRA_ARGS is shared with ZEND_CALL_TRACKED_TEMPORARIES.
-		 * The flag may be set for tracked TMPs without actual extra args. */
 		uint32_t count = ZEND_CALL_NUM_ARGS(call) - call->func->op_array.num_args;
-		if (EXPECTED(count > 0)) {
-			zval *p = ZEND_CALL_VAR_NUM(call, call->func->op_array.last_var + call->func->op_array.T);
-			do {
-				i_zval_ptr_dtor(p);
-				p++;
-			} while (--count);
-		}
+		zval *p = ZEND_CALL_VAR_NUM(call, call->func->op_array.last_var + call->func->op_array.T);
+		do {
+			i_zval_ptr_dtor(p);
+			p++;
+		} while (--count);
  	}
 }
 
@@ -455,69 +423,42 @@ static zend_always_inline void zend_vm_stack_free_extra_args(zend_execute_data *
 }
 
 /* Tracked temporaries: a backwards-growing array at the end of the TMP space.
- * Used for cleanup of scope function closures at parent exit.
  *
  * Layout: TMP[T-1] = base entry (Z_EXTRA high 24 bits = count),
  *         TMP[T-2..] = entries (Z_EXTRA low 8 bits = mode).
  *
- * Cleanup is two-phase to handle scope-fn body code (forced unwind) writing
- * back into parent CVs. Phase A (force-unwind any attached Fiber/Generator)
- * runs BEFORE i_free_compiled_variables so the parent's CVs are still alive;
- * Phase C (refcount-based escape detection + closure release) runs AFTER
- * i_free has dropped parent-CV refs, so refcount > 1 here means truly
- * outlives the parent.
- *
- * Guarded by ZEND_ACC2_HAS_TRACKED_TEMPORARIES in fn_flags2; the flag is
- * only ever set by pass_two_install on user op_arrays. ZEND_CALL_TRACKED_TEMPORARIES
- * (shared with ZEND_CALL_FREE_EXTRA_ARGS) gates Phase C from leave_helper. */
+ * Cleanup happens at the very end of a frame.
+ * Any function wishing to hold tracked temporaries must have set ZEND_ACC2_HAS_TRACKED_TEMPORARIES in its fn_flags2.
+ * ZEND_CALL_TRACKED_TEMPORARIES must be set when the first tracked temporary gets used. */
+typedef void (*zend_tracked_temporary_handler)(zend_execute_data *execute_data, zval *temporary);
+/* Custom tracked temporaries for extensions to define */
+extern ZEND_API zend_tracked_temporary_handler zend_tracked_temporary_handlers[0xFF];
+
+#define ZEND_TRACKED_TMP_ZVAL 1
 #define ZEND_TRACKED_TMP_SCOPE_FUNC 2
 
-static zend_always_inline zval *zend_tracked_tmp_base(const zend_execute_data *call, uint32_t *count)
+static zend_always_inline zval *zend_first_tracked_tmp(const zend_execute_data *call, uint32_t *count)
 {
 	const zend_op_array *op_array = &call->func->op_array;
 	zval *base = ZEND_CALL_VAR_NUM(call, op_array->last_var + op_array->T - 1);
 	*count = Z_EXTRA_P(base) >> 8;
-	return base;
+	return base - 1;
 }
 
-ZEND_API void zend_force_unwind_scope_fn_closures_ex(zend_execute_data *execute_data);
-ZEND_API void zend_release_scope_fn_closures_ex(zend_execute_data *execute_data);
+ZEND_API void zend_force_unwind_scope_fn_closures(zend_execute_data *execute_data);
+ZEND_API void zend_clear_tracked_temporaries(zend_execute_data *execute_data);
 
-/* Phase A wrapper. See zend_vm_stack_free_tracked_temporaries (Phase C) for
- * the matching gate at the end of leave_helper. */
-static zend_always_inline void zend_vm_stack_force_unwind_scope_fn_closures(uint32_t call_info, zend_execute_data *execute_data)
+static zend_always_inline void zend_vm_force_unwind_scope_fn_closures(uint32_t call_info, zend_execute_data *execute_data)
 {
 	if (UNEXPECTED((call_info & ZEND_CALL_TRACKED_TEMPORARIES) != 0) && (EX(func)->common.fn_flags2 & ZEND_ACC2_HAS_TRACKED_TEMPORARIES)) {
-		zend_force_unwind_scope_fn_closures_ex(execute_data);
+		zend_force_unwind_scope_fn_closures(execute_data);
 	}
 }
 
 static zend_always_inline void zend_vm_stack_free_tracked_temporaries(uint32_t call_info, zend_execute_data *execute_data)
 {
 	if (UNEXPECTED((call_info & ZEND_CALL_TRACKED_TEMPORARIES) != 0) && (EX(func)->common.fn_flags2 & ZEND_ACC2_HAS_TRACKED_TEMPORARIES)) {
-		zend_release_scope_fn_closures_ex(execute_data);
-	}
-}
-
-/* Combined teardown: extra args and tracked temporaries share
- * ZEND_CALL_FREE_EXTRA_ARGS / ZEND_CALL_TRACKED_TEMPORARIES (same bit), so
- * checking the bit once and dispatching to both paths in a single branch
- * keeps leave_helper compact. */
-static zend_always_inline void zend_vm_stack_free_extra_args_and_tracked_temporaries(uint32_t call_info, zend_execute_data *call)
-{
-	if (UNEXPECTED(call_info & ZEND_CALL_FREE_EXTRA_ARGS)) {
-		const zend_op_array *op_array = &call->func->op_array;
-		uint32_t count = ZEND_CALL_NUM_ARGS(call) - op_array->num_args;
-		if (EXPECTED(count > 0)) {
-			zval *p = ZEND_CALL_VAR_NUM(call, op_array->last_var + op_array->T);
-			do {
-				i_zval_ptr_dtor(p);
-				p++;
-			} while (--count);
-		}
-		if (UNEXPECTED(op_array->fn_flags2 & ZEND_ACC2_HAS_TRACKED_TEMPORARIES)) {
-			zend_release_scope_fn_closures_ex(call);
-		}
+		zend_clear_tracked_temporaries(execute_data);
 	}
 }
 
@@ -575,62 +516,36 @@ static zend_always_inline void zend_vm_stack_extend_call_frame(
 
 ZEND_API void ZEND_FASTCALL zend_free_extra_named_params(zend_array *extra_named_params);
 
-/* Pop the call frame that originally invoked a scope fn from the vm_stack.
- * `original_call_frame` is recovered from a scope_ex's extra_named_params via
- * the ZEND_SCOPE_EX_EXTRA_NAMED_PARAMS_TAG_MASK clear. Frees extra args / extra named params on
- * that frame, then pops it.
- *
- * If the original frame had ZEND_CALL_ALLOCATED (it landed on its own
- * vm_stack page), we delegate to zend_vm_stack_free_call_frame_ex to pop
- * the page and restore the previous one — a plain vm_stack_top reset would
- * leak the page. */
-static zend_always_inline void zend_scope_ex_pop_original_call_frame(zend_execute_data *original_call_frame)
+/* Pop the call frame that originally invoked a scope fn from the vm_stack:
+ * it's left there when a scope fn is entered to preserve extra args. */
+static zend_always_inline void zend_scope_ex_pop_original_call_frame(zend_execute_data *execute_data)
 {
-	ZEND_ASSERT(original_call_frame != NULL);
-	uint32_t orig_info = ZEND_CALL_INFO(original_call_frame);
+	uint32_t orig_info = EX_CALL_INFO();
 	if (UNEXPECTED(orig_info & ZEND_CALL_FREE_EXTRA_ARGS)) {
-		zend_vm_stack_free_extra_args_ex(orig_info, original_call_frame);
+		zend_vm_stack_free_extra_args_ex(orig_info, execute_data);
 	}
-	if (UNEXPECTED(orig_info & ZEND_CALL_HAS_EXTRA_NAMED_PARAMS)) {
-		zend_free_extra_named_params(original_call_frame->extra_named_params);
-	}
-	zend_vm_stack_free_call_frame_ex(orig_info, original_call_frame);
+	zend_vm_stack_free_call_frame_ex(orig_info, execute_data);
 }
 
-/* For a scope-fn frame (ZEND_ACC2_SCOPE_FUNC): return the top-level parent
- * execute_data, recovered from the closure's stash. NULL if the parent has
- * already exited (lifetime error). */
-static zend_always_inline zend_execute_data *zend_scope_fn_parent_ex(const zend_execute_data *scope_ex)
+/* Top-level parent execute_data; NULL if the parent has already exited. */
+static zend_always_inline zend_execute_data *zend_scope_fn_parent_ex(const zend_execute_data *execute_data)
 {
-	zval *this_ptr = zend_closure_get_this_ptr_ptr(ZEND_CLOSURE_OBJECT(scope_ex->func));
-	return (zend_execute_data *)Z_PTR_P(this_ptr);
+	return Z_PTR_P(zend_closure_get_this_ptr_ptr(ZEND_CLOSURE_OBJECT(EX(func))));
 }
 
-/* Resolve a scope-fn's i-th argument zval. For declared params (i < num_args)
- * the slot lives in the parent's CV table via the literal mapping at
- * op_array->literals[i] (pinned by compile-time pre-reservation and by
- * compact_literals); for extras it lives at the tail of the original call
- * frame. Returns NULL if the parent frame has gone away (lifetime error) or
- * there is no original call frame for an extra-arg lookup. */
-static zend_always_inline zval *zend_scope_fn_get_arg_zval(
-	const zend_execute_data *scope_ex, uint32_t i)
+/* Get the i-th argument of a scope fn: parent CVs for i < num_args, otherwise original frame extra args */
+static zend_always_inline zval *zend_scope_fn_get_arg_zval(const zend_execute_data *execute_data, uint32_t i)
 {
-	const zend_op_array *op_array = &scope_ex->func->op_array;
+	const zend_op_array *op_array = &EX(func)->op_array;
 	if (i < op_array->num_args) {
-		zend_execute_data *parent_ex = zend_scope_fn_parent_ex(scope_ex);
-		if (UNEXPECTED(!parent_ex)) {
-			return NULL;
-		}
+		zend_execute_data *parent_ex = zend_scope_fn_parent_ex(execute_data);
+		ZEND_ASSERT(parent_ex);
 		uint32_t parent_cv_offset = (uint32_t)Z_LVAL(op_array->literals[i]);
 		return ZEND_CALL_VAR(parent_ex, parent_cv_offset);
 	}
-	zend_execute_data *call_frame = (zend_execute_data *)
-		((uintptr_t)scope_ex->extra_named_params & ~(uintptr_t)ZEND_SCOPE_EX_EXTRA_NAMED_PARAMS_TAG_MASK);
-	if (UNEXPECTED(!call_frame)) {
-		return NULL;
-	}
-	zval *base = ZEND_CALL_VAR_NUM(call_frame,
-		call_frame->func->op_array.last_var + call_frame->func->op_array.T);
+	zend_execute_data *call_frame = Z_PTR_P(ZEND_CALL_VAR_NUM(execute_data, 0));
+	ZEND_ASSERT(call_frame);
+	zval *base = ZEND_CALL_VAR_NUM(call_frame, call_frame->func->op_array.last_var + call_frame->func->op_array.T);
 	return base + (i - op_array->num_args);
 }
 

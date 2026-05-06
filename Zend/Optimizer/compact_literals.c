@@ -42,9 +42,6 @@ typedef struct _literal_info {
 		info[n].num_related = (related); \
 	} while (0)
 
-/* Mark a literal as pinned: keep its value (skip dedup) and emit it in
- * input order so a contiguous run stays contiguous. Used for the
- * parameter→parent-CV mapping that ENTER_SCOPE_FUNC's op2.num pins. */
 #define LITERAL_INFO_PIN(n) do { \
 		info[n].num_related = 1; \
 		info[n].pinned = true; \
@@ -249,11 +246,7 @@ void zend_optimizer_compact_literals(zend_op_array *op_array, zend_optimizer_ctx
 					}
 					break;
 				case ZEND_ENTER_SCOPE_FUNC: {
-					/* The parameter→parent-CV mapping IS_LONG literals are
-					 * pinned at indices [0, num_params) by compile-time
-					 * pre-reservation. They must (a) not dedupe with
-					 * anything else and (b) stay at literal index 0..N-1,
-					 * preserving order. */
+					/* We must preserve the precise ordering of the scope fn literals mapping to CV offsets. */
 					uint32_t num_params = opline->op1.num;
 					for (uint32_t k = 0; k < num_params; k++) {
 						LITERAL_INFO_PIN(k);
@@ -337,9 +330,6 @@ void zend_optimizer_compact_literals(zend_op_array *op_array, zend_optimizer_ctx
 					break;
 				case IS_LONG:
 					if (info[i].pinned) {
-						/* Pinned literal (e.g. ENTER_SCOPE_FUNC parameter
-						 * mapping): skip the dedup hash entirely so a
-						 * contiguous input run stays contiguous on output. */
 						map[i] = j;
 						if (i != j) {
 							op_array->literals[j] = op_array->literals[i];

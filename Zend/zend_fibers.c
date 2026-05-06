@@ -737,17 +737,6 @@ ZEND_API void zend_fiber_resume(zend_fiber *fiber, zval *value, zval *return_val
 	zend_fiber_delegate_transfer_result(&transfer, EG(current_execute_data), return_value);
 }
 
-ZEND_API void zend_fiber_resume_exception(zend_fiber *fiber, zval *exception, zval *return_value)
-{
-	ZEND_ASSERT(fiber->context.status == ZEND_FIBER_STATUS_SUSPENDED && fiber->caller == NULL);
-
-	fiber->stack_bottom->prev_execute_data = EG(current_execute_data);
-
-	zend_fiber_transfer transfer = zend_fiber_resume_internal(fiber, exception, /* exception */ true);
-
-	zend_fiber_delegate_transfer_result(&transfer, EG(current_execute_data), return_value);
-}
-
 ZEND_API zend_fiber_transfer zend_fiber_force_unwind_resume(zend_fiber *fiber, zval *exception)
 {
 	ZEND_ASSERT(fiber->context.status == ZEND_FIBER_STATUS_SUSPENDED && fiber->caller == NULL);
@@ -755,42 +744,16 @@ ZEND_API zend_fiber_transfer zend_fiber_force_unwind_resume(zend_fiber *fiber, z
 	return zend_fiber_resume_internal(fiber, exception, /* exception */ true);
 }
 
-ZEND_API void zend_fiber_synthetic_suspend(zend_fiber *fiber, zend_execute_data *current_ex)
+ZEND_API void zend_fiber_resume_exception(zend_fiber *fiber, zval *exception, zval *return_value)
 {
-	/* Mirrors zend_fiber_suspend_internal, but called from a VM helper at
-	 * a synthetic suspend point (post forced-unwind boundary in
-	 * zend_leave_helper). Updates fiber state, switches back to the
-	 * caller (the resumer that armed the forced unwind). */
-	ZEND_ASSERT(!(fiber->flags & ZEND_FIBER_FLAG_DESTROYED));
-	ZEND_ASSERT(fiber->context.status == ZEND_FIBER_STATUS_RUNNING);
-	ZEND_ASSERT(fiber->caller != NULL);
-
-	zend_fiber_context *caller = fiber->caller;
-	fiber->previous = EG(current_fiber_context);
-	fiber->caller = NULL;
-	fiber->execute_data = current_ex;
-
-	zend_fiber_transfer transfer = zend_fiber_switch_to(caller, NULL, false);
-
-	/* Resume after synthetic suspend: if the user passed an exception via
-	 * Fiber::resume / Fiber::throw, install it as the in-flight exception so
-	 * the surrounding VM helper continues with the throw. */
-	if (UNEXPECTED(transfer.flags & ZEND_FIBER_TRANSFER_FLAG_ERROR)) {
-		zend_throw_exception_internal(Z_OBJ(transfer.value));
-	} else {
-		zval_ptr_dtor(&transfer.value);
-	}
+	zend_fiber_transfer transfer = zend_fiber_force_unwind_resume(fiber, exception);
+	zend_fiber_delegate_transfer_result(&transfer, EG(current_execute_data), return_value);
 }
 
 ZEND_API void zend_fiber_suspend(zend_fiber *fiber, zval *value, zval *return_value)
 {
-	if (UNEXPECTED(fiber->flags & ZEND_FIBER_FLAG_DESTROYED)) {
-		zend_throw_error(zend_ce_fiber_error, "Cannot suspend in a force-closed fiber");
-		if (return_value) {
-			ZVAL_NULL(return_value);
-		}
-		return;
-	}
+	ZEND_ASSERT((fiber->flags & ZEND_FIBER_FLAG_DESTROYED) == 0);
+
 	fiber->stack_bottom->prev_execute_data = NULL;
 
 	zend_fiber_transfer transfer = zend_fiber_suspend_internal(fiber, value);
@@ -1020,9 +983,7 @@ ZEND_METHOD(Fiber, resume)
 
 	if (UNEXPECTED(fiber->context.status != ZEND_FIBER_STATUS_SUSPENDED || fiber->caller != NULL)) {
 		if (UNEXPECTED(fiber->pending_resume_throw != NULL)) {
-			/* Fiber is no longer resumable but a deferred throw is pending
-			 * (e.g. fiber finished during the unwind itself). Surface it to
-			 * the user — there is no fiber-side context to inject into. */
+			/* fiber finished, because top frame was scope fn, we still should surface the error */
 			zend_throw_exception_internal(fiber->pending_resume_throw);
 			fiber->pending_resume_throw = NULL;
 			RETURN_THROWS();
@@ -1031,19 +992,13 @@ ZEND_METHOD(Fiber, resume)
 		RETURN_THROWS();
 	}
 
-	/* If a parent's exit force-unwound this fiber, the visible escape Error
-	 * was stashed in pending_resume_throw inside the scope_fn boundary handler.
-	 * Inject it as the in-flight exception of the resumed fiber so the throw
-	 * materializes at the suspension resumption point inside the fiber body. */
 	zval injected;
-	bool inject_exception = (fiber->pending_resume_throw != NULL);
-	zval *resume_value;
+	bool inject_exception = fiber->pending_resume_throw != NULL;
+	zval *resume_value = value;
 	if (UNEXPECTED(inject_exception)) {
 		ZVAL_OBJ(&injected, fiber->pending_resume_throw);
 		fiber->pending_resume_throw = NULL;
 		resume_value = &injected;
-	} else {
-		resume_value = value;
 	}
 
 	fiber->stack_bottom->prev_execute_data = EG(current_execute_data);
@@ -1051,8 +1006,6 @@ ZEND_METHOD(Fiber, resume)
 	zend_fiber_transfer transfer = zend_fiber_resume_internal(fiber, resume_value, inject_exception);
 
 	if (inject_exception) {
-		/* Release the ref we held in `injected` (the resume_internal path
-		 * addref'd into transfer.value separately). */
 		zval_ptr_dtor(&injected);
 	}
 
@@ -1077,10 +1030,7 @@ ZEND_METHOD(Fiber, throw)
 
 	if (UNEXPECTED(fiber->context.status != ZEND_FIBER_STATUS_SUSPENDED || fiber->caller != NULL)) {
 		if (UNEXPECTED(fiber->pending_resume_throw != NULL)) {
-			/* The user-supplied throw value chains as the previous exception
-			 * of the deferred escape Error so neither is lost. */
-			zend_exception_set_previous(fiber->pending_resume_throw, Z_OBJ_P(exception));
-			GC_ADDREF(Z_OBJ_P(exception));
+			/* fiber finished, because top frame was scope fn, we still should surface the error */
 			zend_throw_exception_internal(fiber->pending_resume_throw);
 			fiber->pending_resume_throw = NULL;
 			RETURN_THROWS();
@@ -1089,25 +1039,18 @@ ZEND_METHOD(Fiber, throw)
 		RETURN_THROWS();
 	}
 
-	/* See Fiber::resume above for the deferred-throw mechanism. Here, the
-	 * user's throw chains as the previous of the deferred Error so neither
-	 * is lost. */
 	zval injected;
-	bool injected_pending = (fiber->pending_resume_throw != NULL);
-	zval *resume_value;
+	bool injected_pending = fiber->pending_resume_throw != NULL;
+	zval *exception_value = exception;
 	if (UNEXPECTED(injected_pending)) {
 		ZVAL_OBJ(&injected, fiber->pending_resume_throw);
 		fiber->pending_resume_throw = NULL;
-		zend_exception_set_previous(Z_OBJ(injected), Z_OBJ_P(exception));
-		GC_ADDREF(Z_OBJ_P(exception));
-		resume_value = &injected;
-	} else {
-		resume_value = exception;
+		exception_value = &injected;
 	}
 
 	fiber->stack_bottom->prev_execute_data = EG(current_execute_data);
 
-	zend_fiber_transfer transfer = zend_fiber_resume_internal(fiber, resume_value, true);
+	zend_fiber_transfer transfer = zend_fiber_resume_internal(fiber, exception_value, true);
 
 	if (injected_pending) {
 		zval_ptr_dtor(&injected);

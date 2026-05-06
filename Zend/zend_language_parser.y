@@ -1408,7 +1408,7 @@ inline_function:
 		backup_fn_flags '{' inner_statement_list '}' backup_fn_flags
 			{ $$ = zend_ast_create_decl(ZEND_AST_CLOSURE, $2 | $12, $1, $3,
 				  NULL, $5, NULL, $10, $7, NULL);
-				  ((zend_ast_decl *) $$)->attr = ZEND_AST_DECL_ATTR_SCOPE_FUNC;
+				  ((zend_ast_decl *) $$)->attr = ZEND_ATTR_SCOPE_FUNC;
 				  CG(extra_fn_flags) = $8; }
 ;
 

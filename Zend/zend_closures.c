@@ -30,18 +30,12 @@
 typedef struct _zend_closure {
 	zend_object       std;
 	zend_function     func;
+	/* IS_PTR = parent execute_data for scope fns; IS_OBJ: normal $this */
 	zval              this_ptr;
 	zend_class_entry *called_scope;
 	zif_handler       orig_internal_handler;
-	/* For scope-fn closures only: the object whose lifetime is bound to the
-	 * scope_ex currently active in this closure. Either:
-	 *   - a Fiber (set at ZEND_ENTER_SCOPE_FUNC when the scope_ex is on a
-	 *     different vm_stack than EG(active_fiber)), or
-	 *   - a Generator (set when ZEND_ENTER_SCOPE_FUNC enters a scope fn
-	 *     marked ZEND_ACC_GENERATOR).
-	 * Disambiguated by ->ce. Cleared at parent-exit cleanup, which force-
-	 * unwinds the Fiber or force-destructs the Generator before freeing
-	 * the parent's frame. NULL when the closure is not currently entered. */
+	/* Scope fn closures can be bound to fibers or generators.
+	 * When a scope closure goes out of bounds, it needs to be cleaned up. */
 	zend_object       *attached_object;
 } zend_closure;
 
@@ -87,31 +81,15 @@ static bool zend_valid_closure_binding(
 		zend_closure *closure, zval *newthis, zend_class_entry *scope) /* {{{ */
 {
 	zend_function *func = &closure->func;
-	if (func->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
-		/* Scope-fn closures can have their scope rebound (the body still
-		 * sees the same parent CVs — scope only affects access checks),
-		 * but $this must not change: the closure is registered on the
-		 * parent's tracked-temps array as a specific identity, and a
-		 * fresh $this would change calling-method dispatch. */
-		if (newthis != NULL
-		 && (Z_ISUNDEF(closure->this_ptr)
-		  || Z_OBJ_P(newthis) != Z_OBJ(closure->this_ptr))) {
-			zend_throw_error(NULL,
-				"Cannot rebind $this of a scope function");
-			return false;
-		}
-		if (scope && scope->type == ZEND_INTERNAL_CLASS) {
-			zend_throw_error(NULL,
-				"Cannot bind scope function to scope of internal class %s",
-				ZSTR_VAL(scope->name));
-			return false;
-		}
-		return true;
-	}
 	bool is_fake_closure = (func->common.fn_flags & ZEND_ACC_FAKE_CLOSURE) != 0;
 	if (newthis) {
 		if (func->common.fn_flags & ZEND_ACC_STATIC) {
 			zend_error(E_WARNING, "Cannot bind an instance to a static closure, this will be an error in PHP 9");
+			return false;
+		}
+
+		if ((func->common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC) && (Z_ISUNDEF(closure->this_ptr) || Z_OBJ_P(newthis) != Z_OBJ(closure->this_ptr))) {
+			zend_throw_error(NULL, "Cannot rebind $this of a scope function");
 			return false;
 		}
 
@@ -282,10 +260,7 @@ static void do_closure_bind(zval *return_value, zval *zclosure, zval *newthis, z
 	}
 
 	if (closure->func.common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
-		/* Mutate in place: the closure object is registered on the parent's
-		 * tracked-temps array; cloning would invalidate that registration
-		 * and the parent's exit cleanup would no longer reach this object.
-		 * $this is unchanged (validated above). */
+		/* Scope Fns are unique and must be bound in place */
 		closure->func.common.scope = ce;
 		closure->called_scope = called_scope;
 		ZVAL_OBJ_COPY(return_value, &closure->std);
@@ -358,7 +333,7 @@ static ZEND_NAMED_FUNCTION(zend_closure_call_magic) /* {{{ */ {
 	fci.params = params;
 	fci.param_count = 2;
 	ZVAL_STR(&fci.params[0], EX(func)->common.function_name);
-	if (EX_CALL_INFO() & ZEND_CALL_HAS_EXTRA_NAMED_PARAMS) {
+	if (EX_CALL_INFO() & ZEND_CALL_MAYBE_HAS_EXTRA_NAMED_PARAMS) {
 		zend_string *name;
 		zval *named_param_zval;
 		array_init_size(&fci.params[1], ZEND_NUM_ARGS() + zend_hash_num_elements(EX(extra_named_params)));
@@ -618,7 +593,7 @@ static void zend_closure_free_storage(zend_object *object) /* {{{ */
 		zend_string_release(closure->func.common.function_name);
 	}
 
-	if (Z_TYPE(closure->this_ptr) != IS_UNDEF && Z_TYPE(closure->this_ptr) != IS_PTR) {
+	if (Z_TYPE(closure->this_ptr) == IS_OBJECT) {
 		zval_ptr_dtor(&closure->this_ptr);
 	}
 }
@@ -643,9 +618,7 @@ static zend_object *zend_closure_clone(zend_object *zobject) /* {{{ */
 
 	if (closure->func.common.fn_flags2 & ZEND_ACC2_SCOPE_FUNC) {
 		zend_throw_error(NULL, "Cannot clone a scope function closure");
-		/* Return the original with an extra ref — the ZEND_CLONE handler
-		 * expects clone_obj to return an object with its own reference.
-		 * The exception handler will release it. */
+		/* Return the original with an extra ref for the exception handler to release. */
 		GC_ADDREF(zobject);
 		return zobject;
 	}
@@ -740,6 +713,12 @@ static HashTable *zend_closure_get_debug_info(zend_object *object, int *is_temp)
 	if (Z_TYPE(closure->this_ptr) == IS_OBJECT) {
 		Z_ADDREF(closure->this_ptr);
 		zend_hash_update(debug_info, ZSTR_KNOWN(ZEND_STR_THIS), &closure->this_ptr);
+	} else if (Z_TYPE(closure->this_ptr) == IS_PTR) {
+		zend_execute_data *execute_data = Z_PTR(closure->this_ptr);
+		if (Z_TYPE(EX(This)) == IS_OBJECT) {
+			Z_ADDREF(EX(This));
+			zend_hash_update(debug_info, ZSTR_KNOWN(ZEND_STR_THIS), &EX(This));
+		}
 	}
 
 	if (arg_info &&

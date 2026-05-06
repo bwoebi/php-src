@@ -56,9 +56,7 @@ static zend_class_entry zend_ce_unwind_exit;
 /* Internal pseudo-exception that is not exposed to userland. Throwing this exception *does* execute finally blocks. */
 static zend_class_entry zend_ce_graceful_exit;
 
-/* Internal pseudo-exception thrown into a scope-fn body when its declaring
- * scope is exiting. Runs finally blocks (like graceful_exit) and is
- * swallowed at the scope-fn boundary so it never reaches user code. */
+/* Internal pseudo-exception thrown into a scope-fn body when its declaring scope is exiting. Throwing this exception *does* execute finally blocks and is swallowed at the scope-fn boundary. */
 static zend_class_entry zend_ce_scope_fn_unwind;
 
 ZEND_API void (*zend_throw_exception_hook)(zend_object *ex);
@@ -1081,9 +1079,7 @@ ZEND_API bool zend_is_scope_fn_unwind(const zend_object *ex)
 	return ex->ce == &zend_ce_scope_fn_unwind;
 }
 
-/* Build an Error / exception object without throwing it. Captures the
- * stacktrace and file/line from the current EG(current_execute_data). The
- * caller takes ownership of the single ref. */
+/* Builds the error exception, but does *not* throw it. */
 ZEND_API ZEND_COLD zend_object *zend_build_error(zend_class_entry *exception_ce, const char *message)
 {
 	zval ex, msg_zv;

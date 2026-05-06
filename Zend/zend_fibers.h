@@ -130,36 +130,19 @@ struct _zend_fiber {
 	/* Storage for fiber return value. */
 	zval result;
 
-	/* Forced-unwind state used by parent-exit cleanup of cross-stack scope
-	 * functions. While the unwind is in flight, ZEND_FIBER_FLAG_DESTROYED
-	 * is also set on the fiber so any Fiber::suspend in the body's
-	 * finally/catch throws naturally; forced_unwind_target identifies the
-	 * scope_ex where the unwind stops. Cleared at the scope_ex boundary.
-	 * NULL in normal operation. */
+	/* End function when unwinding exception. */
 	zend_execute_data *forced_unwind_target;
-	/* Visible escape Error to throw to the user on the fiber's next resume.
-	 * Created at force-unwind start (so its stacktrace reflects the parent
-	 * function's leave) and surfaces through Fiber::resume / Fiber::throw
-	 * rather than the unwound fiber body. */
-	zend_object       *pending_resume_throw;
+
+	/* Exception to throw to the fiber on its next resume (e.g. scope fn unwound). */
+	zend_object *pending_resume_throw;
 };
 
 ZEND_API zend_result zend_fiber_start(zend_fiber *fiber, zval *return_value);
 ZEND_API void zend_fiber_resume(zend_fiber *fiber, zval *value, zval *return_value);
 ZEND_API void zend_fiber_suspend(zend_fiber *fiber, zval *value, zval *return_value);
 
-/* Force-resume a SUSPENDED fiber with `exception` injected at its saved EX,
- * synchronously waiting until the fiber suspends back. Used by parent-exit
- * cleanup of cross-stack scope functions to drive the fiber's unwind through
- * the dangerous frame. The transfer result is owned by the caller. */
+/* Resume, but requiring manual zend_fiber_transfer handling */
 ZEND_API zend_fiber_transfer zend_fiber_force_unwind_resume(zend_fiber *fiber, zval *exception);
-
-/* Synthetically suspend the active fiber (mirroring zend_fiber_suspend_internal)
- * from inside a VM helper such as zend_leave_helper. Used to return control to
- * the caller of zend_fiber_force_unwind_resume the moment a forced-unwind
- * target frame finishes its leave. `current_ex` is stored as fiber->execute_data
- * so the next resume continues from that point. */
-ZEND_API void zend_fiber_synthetic_suspend(zend_fiber *fiber, zend_execute_data *current_ex);
 
 /* These functions may be used to create custom fiber objects using the bundled fiber switching context. */
 ZEND_API zend_result zend_fiber_init_context(zend_fiber_context *context, void *kind, zend_fiber_coroutine coroutine, size_t stack_size);

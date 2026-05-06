@@ -278,10 +278,7 @@ static zend_never_inline ZEND_COLD zval* zval_undefined_cv(uint32_t var EXECUTE_
 	if (EXPECTED(EG(exception) == NULL)) {
 		zend_string *cv;
 		if (UNEXPECTED(zend_is_scope_ex(execute_data))) {
-			/* Body opcode var offsets in a scope-fn body are fixed up to
-			 * point at parent CV slots; the scope-fn's own op_array.vars
-			 * does not hold those names. Recover parent_ex via the closure
-			 * stash and read the var name from the parent's op_array. */
+			/* var is a negative offset; restore by adding the difference to parent execute data. */
 			zend_execute_data *parent_ex = zend_scope_fn_parent_ex(execute_data);
 			uint32_t scope_ex_offset = (uint32_t)((char *)execute_data - (char *)parent_ex);
 			cv = parent_ex->func->op_array.vars[EX_VAR_TO_NUM(var + scope_ex_offset)];
@@ -4377,14 +4374,6 @@ ZEND_API ZEND_COLD void ZEND_FASTCALL zend_fcall_interrupt(zend_execute_data *ca
  * on the zend_execute_data, and when the executor leaves the function, the
  * args will be freed in zend_leave_helper.
  */
-static zend_always_inline void mark_tracked_tmp_base_valid(
-	zend_execute_data *execute_data, const zend_op_array *op_array)
-{
-	if (UNEXPECTED(op_array->fn_flags2 & ZEND_ACC2_HAS_TRACKED_TEMPORARIES)) {
-		Z_EXTRA_P(ZEND_CALL_VAR_NUM(execute_data, op_array->last_var + op_array->T - 1)) = 0;
-	}
-}
-
 static zend_never_inline void zend_copy_extra_args(EXECUTE_DATA_D)
 {
 	const zend_op_array *op_array = &EX(func)->op_array;
@@ -4419,13 +4408,11 @@ static zend_never_inline void zend_copy_extra_args(EXECUTE_DATA_D)
 		} while (--count);
 		if (Z_TYPE_INFO_REFCOUNTED(type_flags)) {
 			ZEND_ADD_CALL_FLAG(execute_data, ZEND_CALL_FREE_EXTRA_ARGS);
-			mark_tracked_tmp_base_valid(execute_data, op_array);
 		}
 	} else {
 		do {
 			if (Z_REFCOUNTED_P(src)) {
 				ZEND_ADD_CALL_FLAG(execute_data, ZEND_CALL_FREE_EXTRA_ARGS);
-				mark_tracked_tmp_base_valid(execute_data, op_array);
 				break;
 			}
 			src--;
@@ -4774,7 +4761,7 @@ ZEND_API void zend_unfinished_calls_gc(zend_execute_data *execute_data, zend_exe
 		if (ZEND_CALL_INFO(call) & ZEND_CALL_RELEASE_THIS) {
 			zend_get_gc_buffer_add_obj(buf, Z_OBJ(call->This));
 		}
-		if (ZEND_CALL_INFO(call) & ZEND_CALL_HAS_EXTRA_NAMED_PARAMS) {
+		if (ZEND_CALL_INFO(call) & ZEND_CALL_MAYBE_HAS_EXTRA_NAMED_PARAMS) {
 			zval *val;
 			ZEND_HASH_FOREACH_VAL(call->extra_named_params, val) {
 				zend_get_gc_buffer_add_zval(buf, val);
@@ -4907,7 +4894,7 @@ static void cleanup_unfinished_calls(zend_execute_data *execute_data, uint32_t o
 			if (ZEND_CALL_INFO(call) & ZEND_CALL_RELEASE_THIS) {
 				OBJ_RELEASE(Z_OBJ(call->This));
 			}
-			if (ZEND_CALL_INFO(call) & ZEND_CALL_HAS_EXTRA_NAMED_PARAMS) {
+			if (ZEND_CALL_INFO(call) & ZEND_CALL_MAYBE_HAS_EXTRA_NAMED_PARAMS) {
 				zend_free_extra_named_params(call->extra_named_params);
 			}
 			if (call->func->common.fn_flags & ZEND_ACC_CLOSURE) {
@@ -4995,212 +4982,174 @@ ZEND_API void zend_cleanup_unfinished_execution(zend_execute_data *execute_data,
 	cleanup_live_vars(execute_data, op_num, catch_op_num);
 }
 
-/* Phase A: walk tracked-temps; force-unwind any attached Fiber/Generator
- * before the parent's CVs are freed. See zend_execute.h for ordering. */
-ZEND_API void zend_force_unwind_scope_fn_closures_ex(zend_execute_data *call)
+/* We need to force-unwind any attached Fiber/Generator before the parent's CVs are freed. */
+ZEND_API void zend_force_unwind_scope_fn_closures(zend_execute_data *call)
 {
 	uint32_t count;
-	zval *base = zend_tracked_tmp_base(call, &count);
+	zval *base = zend_first_tracked_tmp(call, &count);
 
 	for (uint32_t i = 0; i < count; i++) {
-		zval *entry = base - i - 1;
-		ZEND_ASSERT((Z_EXTRA_P(entry) & 0xFF) == ZEND_TRACKED_TMP_SCOPE_FUNC);
-		zend_object **attached_object_ptr =
-			zend_closure_get_attached_object_ptr(Z_OBJ_P(entry));
-		if (*attached_object_ptr == NULL) {
-			continue;
-		}
+		zval *entry = base - i;
+		if ((Z_EXTRA_P(entry) & 0xFF) == ZEND_TRACKED_TMP_SCOPE_FUNC) {
+			zend_object **attached_object_ptr = zend_closure_get_attached_object_ptr(Z_OBJ_P(entry));
+			if (EXPECTED(*attached_object_ptr == NULL)) {
+				continue;
+			}
 
-		zend_fiber *unwind_fiber = NULL;
-		if (UNEXPECTED((*attached_object_ptr)->ce == zend_ce_fiber)) {
-			/* Cross-stack scope-fn body running directly in a fiber. */
-			unwind_fiber = (zend_fiber *)*attached_object_ptr;
-		} else if (UNEXPECTED((*attached_object_ptr)->ce == zend_ce_generator)) {
-			/* Generator pinned to scope_ex. If a fiber is suspended
-			 * inside the generator's body, that fiber's saved chain
-			 * crosses through scope_ex (in our parent's frame) and
-			 * would dangle once we free it — drive the fiber forward
-			 * through scope_ex first so its chain detaches from there.
-			 * The generator itself is closed below. */
-			zend_generator *gen = (zend_generator *) *attached_object_ptr;
-			if (gen->fiber_running_me != NULL) {
-				zend_fiber *fiber = (zend_fiber *)gen->fiber_running_me;
-				if (fiber->context.status == ZEND_FIBER_STATUS_SUSPENDED
-				 && fiber->caller == NULL) {
-					unwind_fiber = fiber;
+			zend_fiber *unwind_fiber = NULL;
+			if ((*attached_object_ptr)->ce == zend_ce_fiber) {
+				unwind_fiber = (zend_fiber *) *attached_object_ptr;
+			} else if ((*attached_object_ptr)->ce == zend_ce_generator) {
+				zend_generator *gen = (zend_generator *) *attached_object_ptr;
+				if (gen->fiber_running_me != NULL) {
+					unwind_fiber = gen->fiber_running_me;
+					ZEND_ASSERT(unwind_fiber->context.status == ZEND_FIBER_STATUS_SUSPENDED && unwind_fiber->caller == NULL);
 				}
 			}
-		}
 
-		if (unwind_fiber != NULL) {
-			/* Locate the scope_ex in the fiber's saved chain: the unique
-			 * frame whose func belongs to this closure object. */
-			zend_execute_data *target = unwind_fiber->execute_data;
-			while (target != NULL) {
-				if (zend_is_scope_ex(target)
-				 && ZEND_CLOSURE_OBJECT(target->func) == Z_OBJ_P(entry)) {
-					break;
+			if (unwind_fiber != NULL) {
+				/* Locate the original call frame in the fiber's callstack to stop unwinding there. */
+				zend_execute_data *target = unwind_fiber->execute_data;
+				while (target != NULL) {
+					if (zend_is_scope_ex(target) && ZEND_CLOSURE_OBJECT(target->func) == Z_OBJ_P(entry)) {
+						break;
+					}
+					target = target->prev_execute_data;
 				}
-				target = target->prev_execute_data;
-			}
-			ZEND_ASSERT(target != NULL);
+				ZEND_ASSERT(target != NULL);
 
-			ZEND_ASSERT(unwind_fiber->pending_resume_throw == NULL);
-			zend_object *prev_exception = EG(exception);
+				/* In case there's already a pending throw, just release it. */
+				if (unwind_fiber->pending_resume_throw) {
+					OBJ_RELEASE(unwind_fiber->pending_resume_throw);
+					unwind_fiber->pending_resume_throw = NULL;
+				}
 
-			/* Internal sentinel: triggers finally blocks in the scope-fn
-			 * body, then is swallowed at the scope-fn boundary. ZVAL_OBJ
-			 * transfers the single ref from zend_create_scope_fn_unwind
-			 * into `thrown` (released after the resume below). */
-			zval thrown;
-			ZVAL_OBJ(&thrown, zend_create_scope_fn_unwind());
-			unwind_fiber->forced_unwind_target = target;
+				zend_object *prev_exception = EG(exception);
 
-			/* Set DESTROYED for the duration of the unwind: any
-			 * Fiber::suspend the body's finally/catch hits will throw
-			 * "Cannot suspend in a force-closed fiber" via the existing
-			 * DESTROYED check. Cleared at the scope-fn boundary in
-			 * zend_leave_scope_ex. */
-			unwind_fiber->flags |= ZEND_FIBER_FLAG_DESTROYED;
+				zval thrown;
+				ZVAL_OBJ(&thrown, zend_create_scope_fn_unwind());
+				unwind_fiber->forced_unwind_target = target;
+				/* Set DESTROYED for the duration of the unwind: causes Fiber::suspend() to throw. Cleared in zend_leave_scope_ex. */
+				unwind_fiber->flags |= ZEND_FIBER_FLAG_DESTROYED;
 
-			zend_fiber_transfer transfer =
-				zend_fiber_force_unwind_resume(unwind_fiber, &thrown);
-			zval_ptr_dtor(&thrown);
+				zend_fiber_transfer transfer = zend_fiber_force_unwind_resume(unwind_fiber, &thrown);
+				zval_ptr_dtor(&thrown);
 
-			ZEND_ASSERT(unwind_fiber->forced_unwind_target == NULL);
-			ZEND_ASSERT(!(unwind_fiber->flags & ZEND_FIBER_FLAG_DESTROYED));
+				ZEND_ASSERT(unwind_fiber->forced_unwind_target == NULL);
+				ZEND_ASSERT(!(unwind_fiber->flags & ZEND_FIBER_FLAG_DESTROYED));
 
-			if (transfer.flags & ZEND_FIBER_TRANSFER_FLAG_ERROR) {
-				/* Don't re-raise the sentinel above the scope-fn —
-				 * it's an internal marker, not user-visible. */
-				if (zend_is_scope_fn_unwind(Z_OBJ(transfer.value))) {
-					zval_ptr_dtor(&transfer.value);
-					EG(exception) = prev_exception;
-				} else {
+				if (transfer.flags & ZEND_FIBER_TRANSFER_FLAG_ERROR) {
+					/* The sentinel is internal — it's absorbed at scope_ex's leave_helper
+					 * and never surfaces as the fiber's terminal exception. */
+					ZEND_ASSERT(!zend_is_scope_fn_unwind(Z_OBJ(transfer.value)));
 					EG(exception) = Z_OBJ(transfer.value);
 					if (prev_exception) {
 						zend_exception_set_previous(EG(exception), prev_exception);
 					}
+				} else {
+					zval_ptr_dtor(&transfer.value);
+					/* Preserve the exception, e.g. an exit unwind MUST never be swallowed. */
+					if (EG(exception) == NULL) {
+						EG(exception) = prev_exception;
+					} else if (prev_exception) {
+						zend_exception_set_previous(EG(exception), prev_exception);
+					}
 				}
-			} else {
-				zval_ptr_dtor(&transfer.value);
-				EG(exception) = prev_exception;
 			}
-		}
 
-		/* Whatever was attached, finalize it. The fiber-attached unwind
-		 * detached the closure via leave_helper. The generator-attached
-		 * case (with or without a fiber inside) still needs its generator
-		 * closed. */
-		if (*attached_object_ptr != NULL
-		 && (*attached_object_ptr)->ce == zend_ce_generator) {
-			zend_generator *gen = (zend_generator *) *attached_object_ptr;
-			zend_generator_close(gen, false);
+			if (*attached_object_ptr != NULL && (*attached_object_ptr)->ce == zend_ce_generator) {
+				zend_generator *gen = (zend_generator *) *attached_object_ptr;
+				zend_generator_close(gen, false);
+			}
+
+			ZEND_ASSERT(*attached_object_ptr == NULL);
 		}
-		ZEND_ASSERT(*zend_closure_get_attached_object_ptr(Z_OBJ_P(entry)) == NULL);
 	}
 }
 
-/* Phase C: walk the parent's tracked-temps array, release each scope-fn
- * closure ref, and throw an escape Error if the closure outlived its
- * declaring scope (refcount > 1 after Phase A's force-unwind released
- * scope_ex's ZEND_CALL_CLOSURE ref AND after i_free_compiled_variables
- * dropped any parent CV refs). */
-ZEND_API void zend_release_scope_fn_closures_ex(zend_execute_data *call)
+ZEND_API zend_tracked_temporary_handler zend_tracked_temporary_handlers[0xFF];
+
+/* To be done as final step before actually removing the call frame, after CVs etc. are freed. */
+ZEND_API void zend_clear_tracked_temporaries(zend_execute_data *execute_data)
 {
 	uint32_t count;
-	zval *base = zend_tracked_tmp_base(call, &count);
+	zval *base = zend_first_tracked_tmp(execute_data, &count);
 
 	for (uint32_t i = 0; i < count; i++) {
-		zval *entry = base - i - 1;
-		ZEND_ASSERT((Z_EXTRA_P(entry) & 0xFF) == ZEND_TRACKED_TMP_SCOPE_FUNC);
-		zval *tmp = zend_closure_get_this_ptr_ptr(Z_OBJ_P(entry));
-		bool escaped = GC_REFCOUNT(Z_OBJ_P(entry)) > 1;
+		zval *entry = base - i;
+		switch (Z_EXTRA_P(entry) & 0xFF) {
+			case 0:
+				// Unused
+				break;
 
-		Z_PTR_P(tmp) = NULL; /* invalidate parent_execute_data */
-		OBJ_RELEASE(Z_OBJ_P(entry));
-		if (UNEXPECTED(escaped) && EG(exception) == NULL) {
-			/* Throw the escape Error unless one is already in flight
-			 * from the forced-unwind path. */
-			zend_throw_error(NULL,
-				"Scope function closure must not outlive the declaring scope");
+			case ZEND_TRACKED_TMP_ZVAL:
+				zval_ptr_dtor(entry);
+				break;
+
+			case ZEND_TRACKED_TMP_SCOPE_FUNC: {
+				zend_object *closure = Z_OBJ_P(entry);
+				zval *tmp = zend_closure_get_this_ptr_ptr(closure);
+				bool escaped = GC_REFCOUNT(closure) > 1;
+				if (escaped) {
+					/* Include/eval share the symbol table with the caller.
+					 * Straight up requiring manual unset() would be quite un-ergonomic.
+					 * Hence we remove them from the local CVs (before detaching!). */
+					if (ZEND_CALL_INFO(execute_data) & ZEND_CALL_CODE) {
+						/* Do a single pass for all scope fns possibly declared in this frame */
+						for (int v = EX(func)->op_array.last_var - 1; v >= 0; v--) {
+							zval *cv = ZEND_CALL_VAR_NUM(execute_data, v), *zv = cv;
+							ZVAL_DEREF(zv);
+							if (Z_TYPE_P(zv) == IS_OBJECT && Z_OBJCE_P(zv) == zend_ce_closure) {
+								zval *closure_ptr = zend_closure_get_this_ptr_ptr(Z_OBJ_P(zv));
+								if (Z_TYPE_P(closure_ptr) == IS_PTR && Z_PTR_P(closure_ptr) == execute_data) {
+									zval garbage;
+									ZVAL_COPY_VALUE(&garbage, cv);
+									ZVAL_UNDEF(cv);
+									zval_ptr_dtor(&garbage);
+								}
+							}
+						}
+					}
+					escaped = GC_REFCOUNT(closure) > 1;
+				}
+
+				Z_PTR_P(tmp) = NULL; /* invalidate parent_execute_data */
+				OBJ_RELEASE(closure);
+				if (UNEXPECTED(escaped) && EG(exception) == NULL) {
+					zend_throw_error(NULL,
+						"Scope function closure must not outlive the declaring scope");
+				}
+				break;
+			}
+
+			default:
+				zend_tracked_temporary_handlers[Z_EXTRA_P(entry) & 0xFF](execute_data, entry);
+				break;
 		}
 	}
 }
 
-ZEND_API bool zend_leave_scope_ex(zend_execute_data *scope_ex, uint32_t call_info)
+/* Handle an in-progress force unwinding when an invalidated scope fn called on a foreign fiber leaves the frame. */
+ZEND_API ZEND_COLD zend_fiber *zend_scope_fn_consume_forced_unwind()
 {
-	zend_object *closure_obj = ZEND_CLOSURE_OBJECT(scope_ex->func);
-	uintptr_t named_params_tag = (uintptr_t)scope_ex->extra_named_params;
-	zend_execute_data *original_call_frame =
-		(zend_execute_data *)(named_params_tag & ~(uintptr_t)ZEND_SCOPE_EX_EXTRA_NAMED_PARAMS_TAG_MASK);
-	zend_fiber *unwind_fiber = NULL;
+	zend_fiber *unwind_fiber = EG(active_fiber);
+	ZEND_ASSERT(unwind_fiber->flags & ZEND_FIBER_FLAG_DESTROYED);
+	unwind_fiber->forced_unwind_target = NULL;
+	/* Clear the DESTROYED flag so the fiber can resume normally; this was temporary for unwinding. */
+	unwind_fiber->flags &= ~ZEND_FIBER_FLAG_DESTROYED;
 
-	if (UNEXPECTED(named_params_tag & ZEND_SCOPE_EX_EXTRA_NAMED_PARAMS_TAG_OBJECT_ATTACHED)) {
-		zend_object **attached_object_ptr = zend_closure_get_attached_object_ptr(closure_obj);
-		ZEND_ASSERT(*attached_object_ptr != NULL);
-		*attached_object_ptr = NULL;
+	ZEND_ASSERT(EG(exception) != NULL);
+	if (zend_is_scope_fn_unwind(EG(exception))) {
+		/* Hide the internal unwind marker; the pending_resume_throw is what we need */
+		OBJ_RELEASE(EG(exception));
+		EG(exception) = NULL;
 	}
 
-	/* Boundary of an in-flight forced unwind: clear the fiber's unwind state,
-	 * absorb the sentinel, and build the visible escape Error with a stacktrace
-	 * from inside the scope_fn body (EG(current_execute_data) is still scope_ex
-	 * at this point). The Error is injected into the fiber on its next resume
-	 * so the throw materializes inside the fiber rather than at the user's
-	 * resume() call site. */
-	if (UNEXPECTED(EG(active_fiber) != NULL
-	            && EG(active_fiber)->forced_unwind_target == scope_ex)) {
-		unwind_fiber = EG(active_fiber);
-		ZEND_ASSERT(unwind_fiber->flags & ZEND_FIBER_FLAG_DESTROYED);
-		unwind_fiber->forced_unwind_target = NULL;
-		/* Cleared before the synthetic suspend below: the suspend's
-		 * own asserts require not-DESTROYED, and the fiber resumes
-		 * normally on the next user $fiber->resume(). */
-		unwind_fiber->flags &= ~ZEND_FIBER_FLAG_DESTROYED;
+	ZEND_ASSERT(unwind_fiber->pending_resume_throw == NULL);
+	unwind_fiber->pending_resume_throw = zend_build_error(NULL,
+		"Scope function closure must not outlive the declaring scope");
 
-		/* If the scope-fn body propagated the sentinel out (no catch absorbed
-		 * it), it surfaces here. Absorb it: the visible Error built below is
-		 * what the user should see, not the internal unwind marker. */
-		if (EG(exception) != NULL && zend_is_scope_fn_unwind(EG(exception))) {
-			OBJ_RELEASE(EG(exception));
-			EG(exception) = NULL;
-		}
-
-		ZEND_ASSERT(unwind_fiber->pending_resume_throw == NULL);
-		unwind_fiber->pending_resume_throw = zend_build_error(NULL,
-			"Scope function closure must not outlive the declaring scope");
-	}
-
-	EG(current_execute_data) = scope_ex->prev_execute_data;
-	zend_scope_ex_cleanup(scope_ex);
-
-	/* Release the ZEND_CALL_CLOSURE ref transferred from INIT_DYNAMIC_CALL.
-	 * Generator scope fns reach ZEND_GENERATOR_RETURN, never this helper —
-	 * they release via zend_generator_free_storage's closure-release path. */
-	OBJ_RELEASE(closure_obj);
-
-	if (UNEXPECTED(call_info & ZEND_CALL_TOP)) {
-		/* TOP: scope_fn body is the fiber body or main script. Suspend before
-		 * the natural fiber-finish so the user can resume and have the Error
-		 * injected. */
-		if (UNEXPECTED(unwind_fiber != NULL)) {
-			zend_fiber_synthetic_suspend(unwind_fiber, NULL);
-		}
-		zend_scope_ex_pop_original_call_frame(original_call_frame);
-		return true;
-	}
-
-	zend_scope_ex_pop_original_call_frame(original_call_frame);
-
-	if (UNEXPECTED(unwind_fiber != NULL)) {
-		/* Non-TOP: synthetically suspend with execute_data set to the frame
-		 * above the scope_fn — the user's next resume injects the Error
-		 * there, so it materializes at the scope_fn call site inside the
-		 * fiber body. */
-		zend_fiber_synthetic_suspend(unwind_fiber, EG(current_execute_data));
-	}
-
-	return false;
+	return unwind_fiber;
 }
 
 ZEND_API ZEND_ATTRIBUTE_DEPRECATED HashTable *zend_unfinished_execution_gc(zend_execute_data *execute_data, zend_execute_data *call, zend_get_gc_buffer *gc_buffer)
@@ -5223,7 +5172,7 @@ ZEND_API HashTable *zend_unfinished_execution_gc_ex(zend_execute_data *execute_d
 	}
 
 	if (!ZEND_USER_CODE(EX(func)->common.type)) {
-		ZEND_ASSERT(!(EX_CALL_INFO() & (ZEND_CALL_HAS_SYMBOL_TABLE|ZEND_CALL_FREE_EXTRA_ARGS|ZEND_CALL_HAS_EXTRA_NAMED_PARAMS)));
+		ZEND_ASSERT(!(EX_CALL_INFO() & (ZEND_CALL_HAS_SYMBOL_TABLE|ZEND_CALL_FREE_EXTRA_ARGS|ZEND_CALL_MAYBE_HAS_EXTRA_NAMED_PARAMS)));
 		return NULL;
 	}
 
@@ -5239,12 +5188,12 @@ ZEND_API HashTable *zend_unfinished_execution_gc_ex(zend_execute_data *execute_d
 	if (EX_CALL_INFO() & ZEND_CALL_FREE_EXTRA_ARGS) {
 		zval *zv = EX_VAR_NUM(op_array->last_var + op_array->T);
 		const zval *end = zv + (EX_NUM_ARGS() - op_array->num_args);
-		while (zv < end) {
+		while (zv != end) {
 			zend_get_gc_buffer_add_zval(gc_buffer, zv++);
 		}
 	}
 
-	if (EX_CALL_INFO() & ZEND_CALL_HAS_EXTRA_NAMED_PARAMS) {
+	if ((EX_CALL_INFO() & ZEND_CALL_MAYBE_HAS_EXTRA_NAMED_PARAMS) && EX(extra_named_params) != NULL) {
 		zval extra_named_params;
 		ZVAL_ARR(&extra_named_params, EX(extra_named_params));
 		zend_get_gc_buffer_add_zval(gc_buffer, &extra_named_params);
@@ -5761,8 +5710,8 @@ zval * ZEND_FASTCALL zend_handle_named_arg(
 	zval *arg;
 	if (UNEXPECTED(arg_offset == fbc->common.num_args)) {
 		/* Unknown named parameter that will be collected into a variadic. */
-		if (!(ZEND_CALL_INFO(call) & ZEND_CALL_HAS_EXTRA_NAMED_PARAMS)) {
-			ZEND_ADD_CALL_FLAG(call, ZEND_CALL_HAS_EXTRA_NAMED_PARAMS);
+		if (!(ZEND_CALL_INFO(call) & ZEND_CALL_MAYBE_HAS_EXTRA_NAMED_PARAMS)) {
+			ZEND_ADD_CALL_FLAG(call, ZEND_CALL_MAYBE_HAS_EXTRA_NAMED_PARAMS);
 			call->extra_named_params = zend_new_array(0);
 		}
 
@@ -5933,8 +5882,10 @@ ZEND_API zend_result ZEND_FASTCALL zend_handle_undef_args(zend_execute_data *cal
 
 ZEND_API void ZEND_FASTCALL zend_free_extra_named_params(zend_array *extra_named_params)
 {
-	/* Extra named params may be shared. */
-	zend_array_release(extra_named_params);
+	/* extra_named_params may be NULL on frames where ZEND_CALL_MAYBE_HAS_EXTRA_NAMED_PARAMS was set as a tracked-temporaries marker */
+	if (extra_named_params != NULL) {
+		zend_array_release(extra_named_params);
+	}
 }
 
 #if defined(ZEND_VM_IP_GLOBAL_REG) && ((ZEND_VM_KIND == ZEND_VM_KIND_CALL) || (ZEND_VM_KIND == ZEND_VM_KIND_HYBRID))
